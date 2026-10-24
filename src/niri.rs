@@ -4951,7 +4951,13 @@ impl Niri {
         // If we're in process of locking the session, check if the requirements were met.
         match mem::take(&mut self.lock_state) {
             LockState::Locking(confirmation) => {
-                if state.lock_render_state == LockRenderState::Unlocked {
+                if state.lock_render_state == LockRenderState::Unlocked
+                    && !backend.is_session_active()
+                {
+                    // We're on another VT and can't render. Keep locking; the redraw on session
+                    // resume will finish the lock before anything is shown.
+                    self.lock_state = LockState::Locking(confirmation);
+                } else if state.lock_render_state == LockRenderState::Unlocked {
                     // We needed to render a locked frame on this output but failed.
                     self.unlock();
                 } else {
@@ -4999,7 +5005,11 @@ impl Niri {
                 // and get rendered for screen cast. This is currently
                 // unimplemented, but happens to work by chance, since output
                 // redrawing is more eager than it should be.
-                self.render_windows_for_screen_cast(renderer, output, target_presentation_time);
+                //
+                // Window casts render the window directly, so they'd bypass the lock screen.
+                if !self.is_locked() {
+                    self.render_windows_for_screen_cast(renderer, output, target_presentation_time);
+                }
             }
 
             self.render_for_screencopy_with_damage(renderer, output);
@@ -6691,6 +6701,8 @@ impl Niri {
                 self.cursor_manager
                     .set_cursor_image(CursorImageStatus::default_named());
                 self.cancel_mru();
+                // Otherwise the first key at the lock screen goes to the dialog, and Enter quits.
+                self.exit_confirm_dialog.hide();
 
                 // I don't like this being asynchronous, but it would be a bit involved to move
                 // this whole function to State. This should do for now.
