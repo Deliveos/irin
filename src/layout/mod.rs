@@ -4589,13 +4589,11 @@ impl<W: LayoutElement> Layout<W> {
         // Conversely, if `ws` was the last workspace on a monitor, an
         // empty workspace needs to be added after.
 
-        if let MonitorSet::Normal {
-            monitors,
-            active_monitor_idx,
-            ..
-        } = &mut self.monitor_set
-        {
-            let monitor = &mut monitors[*active_monitor_idx];
+        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+            // The workspace can be on any monitor when referenced by id.
+            let Some(monitor) = monitors.iter_mut().find(|mon| mon.has_ws(wsid)) else {
+                return;
+            };
             if monitor.options.layout.empty_workspace_above_first
                 && monitor
                     .workspaces

@@ -630,6 +630,11 @@ impl ExtWorkspaceHandler for State {
     }
 
     fn assign_workspace(&mut self, ws_id: WorkspaceId, output: Output) {
+        // The pending action holds a weak output that still upgrades shortly after removal.
+        if !self.niri.output_exists(&output) {
+            return;
+        }
+
         let reference = niri_config::WorkspaceReference::Id(ws_id.get());
         if let Some((old_output, old_idx)) = self.niri.find_output_and_workspace_index(reference) {
             self.niri
