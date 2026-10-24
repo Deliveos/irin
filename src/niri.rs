@@ -6697,6 +6697,8 @@ impl Niri {
                 self.cursor_manager
                     .set_cursor_image(CursorImageStatus::default_named());
                 self.cancel_mru();
+                // Otherwise the first key at the lock screen goes to the dialog, and Enter quits.
+                self.exit_confirm_dialog.hide();
 
                 // I don't like this being asynchronous, but it would be a bit involved to move
                 // this whole function to State. This should do for now.
