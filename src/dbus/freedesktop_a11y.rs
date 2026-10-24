@@ -101,6 +101,25 @@ enum A11yError {
     Failed(String),
 }
 
+/// Only the screen reader may see or grab keys: these calls expose every keystroke, including
+/// passwords typed at the lock screen. Same allowlist as Mutter.
+async fn check_access(conn: &zbus::Connection, sender: &UniqueName<'_>) -> fdo::Result<()> {
+    const ALLOWED: &str = "org.gnome.Orca.KeyboardMonitor";
+
+    let dbus = fdo::DBusProxy::new(conn).await?;
+    let owner = dbus
+        .get_name_owner(BusName::from_static_str(ALLOWED).unwrap())
+        .await
+        .ok();
+    if owner.as_deref() == Some(sender) {
+        Ok(())
+    } else {
+        Err(fdo::Error::AccessDenied(format!(
+            "only the owner of {ALLOWED} may use this method"
+        )))
+    }
+}
+
 /// Interface for monitoring of keyboard input by assistive technologies.
 ///
 /// This interface is used by assistive technologies to monitor keyboard input of the compositor.
@@ -114,10 +133,15 @@ impl KeyboardMonitor {
     //
     // This behavior stays in effect until the same client calls UngrabKeyboard or closes its D-Bus
     // connection.
-    async fn grab_keyboard(&self, #[zbus(header)] hdr: Header<'_>) -> fdo::Result<()> {
+    async fn grab_keyboard(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> fdo::Result<()> {
         let Some(sender) = hdr.sender() else {
             return Err(fdo::Error::Failed("no sender".to_owned()));
         };
+        check_access(conn, sender).await?;
         let sender = OwnedUniqueName::from(sender.to_owned());
         trace!("enabling keyboard grab for {sender}");
 
@@ -155,10 +179,15 @@ impl KeyboardMonitor {
     //
     // This behavior stays in effect until the same client calls UnwatchKeyboard or closes its D-Bus
     // connection.
-    async fn watch_keyboard(&self, #[zbus(header)] hdr: Header<'_>) -> fdo::Result<()> {
+    async fn watch_keyboard(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> fdo::Result<()> {
         let Some(sender) = hdr.sender() else {
             return Err(fdo::Error::Failed("no sender".to_owned()));
         };
+        check_access(conn, sender).await?;
         let sender = OwnedUniqueName::from(sender.to_owned());
         trace!("enabling keyboard watch for {sender}");
 
@@ -211,12 +240,14 @@ impl KeyboardMonitor {
     async fn set_key_grabs(
         &self,
         #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
         modifiers: Vec<u32>,
         keystrokes: Vec<(u32, u32)>,
     ) -> fdo::Result<()> {
         let Some(sender) = hdr.sender() else {
             return Err(fdo::Error::Failed("no sender".to_owned()));
         };
+        check_access(conn, sender).await?;
         let sender = OwnedUniqueName::from(sender.to_owned());
         trace!("updating key grabs for {sender}");
 
@@ -714,5 +745,70 @@ impl State {
         if let Err(err) = to_a11y.send_blocking(msg) {
             warn!("error sending pointer contents to a11y manager: {err:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    use zbus::blocking::connection::Builder;
+
+    use super::*;
+
+    #[test]
+    fn keyboard_monitor_only_allows_screen_reader() {
+        // Private bus so the test doesn't touch the user's session.
+        let Ok(daemon) = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            eprintln!("dbus-daemon not found, skipping");
+            return;
+        };
+        // Kill it even if an assert fails, or it keeps the test output pipe open.
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut daemon = KillOnDrop(daemon);
+
+        let mut addr = String::new();
+        BufReader::new(daemon.0.stdout.take().unwrap())
+            .read_line(&mut addr)
+            .unwrap();
+        let addr = addr.trim();
+
+        let server = Builder::address(addr)
+            .unwrap()
+            .serve_at("/org/freedesktop/a11y/Manager", KeyboardMonitor::default())
+            .unwrap()
+            .build()
+            .unwrap();
+        let server_name = server.unique_name().unwrap().to_owned();
+
+        let watch = |conn: &zbus::blocking::Connection| {
+            conn.call_method(
+                Some(server_name.as_str()),
+                "/org/freedesktop/a11y/Manager",
+                Some("org.freedesktop.a11y.KeyboardMonitor"),
+                "WatchKeyboard",
+                &(),
+            )
+        };
+
+        let client = Builder::address(addr).unwrap().build().unwrap();
+        assert!(watch(&client).is_err(), "any caller could watch keys");
+
+        client
+            .request_name("org.gnome.Orca.KeyboardMonitor")
+            .unwrap();
+        assert!(watch(&client).is_ok(), "the screen reader was refused");
     }
 }

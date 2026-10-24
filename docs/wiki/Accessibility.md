@@ -6,6 +6,7 @@ Niri has basic support for screen readers (specifically, [Orca](https://orca.gno
 To avoid conflicts with an already running compositor, niri won't expose accessibility interfaces when started as a nested window, or as a plain `/usr/bin/niri` on a TTY.
 
 We implement the `org.freedesktop.a11y.KeyboardMonitor` D-Bus interface for Orca to listen and grab keyboard keys, and we expose the main niri UI elements via [AccessKit](https://accesskit.dev).
+Like in GNOME, only the owner of the `org.gnome.Orca.KeyboardMonitor` bus name may listen to or grab keys, so that other programs can't read your keystrokes.
 Specifically, niri will announce:
 
 - workspace switching, for example it'll say "Workspace 2" when you switch to the second workspace;
