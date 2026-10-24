@@ -1521,17 +1521,6 @@ impl<W: LayoutElement> Monitor<W> {
         self.workspaces_with_render_geo_cull(true)
     }
 
-    pub fn workspaces_with_render_geo_idx(
-        &self,
-    ) -> impl Iterator<Item = ((usize, &Workspace<W>), Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
-
-        let geo = self.workspaces_render_geo();
-        zip(self.workspaces.iter().enumerate(), geo)
-            // Cull out workspaces outside the output.
-            .filter(move |(_ws, geo)| geo.intersection(output_geo).is_some())
-    }
-
     pub fn workspaces_with_render_geo_mut(
         &mut self,
         cull: bool,
@@ -1596,7 +1585,11 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> (InsertWorkspace, Rectangle<f64, Logical>) {
-        let mut iter = self.workspaces_with_render_geo_idx();
+        // Not culled: an overshooting workspace switch animation can leave no workspace on screen.
+        let mut iter = zip(
+            self.workspaces.iter().enumerate(),
+            self.workspaces_render_geo(),
+        );
 
         let dummy = Rectangle::default();
 
