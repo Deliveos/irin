@@ -3277,7 +3277,15 @@ fn pick_mode(
             if let Some(refresh) = target_mode.refresh {
                 let custom_mode =
                     calculate_mode_cvt(target_mode.width, target_mode.height, refresh);
-                return Some((custom_mode, false));
+                // Degenerate sizes (e.g. width 0) give zero timings, which crash later on division.
+                if custom_mode.clock() == 0
+                    || custom_mode.hsync().2 == 0
+                    || custom_mode.vsync().2 == 0
+                {
+                    warn!("ignoring invalid custom mode {target_mode:?}");
+                } else {
+                    return Some((custom_mode, false));
+                }
             } else {
                 warn!("ignoring custom mode without refresh rate");
             }
