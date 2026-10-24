@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::cmp::{max, min};
 use std::ffi::{CString, OsStr};
 use std::fmt::Display;
+use std::fs::File;
 use std::io::Write;
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -313,6 +314,26 @@ pub fn make_screenshot_path(config: &Config) -> anyhow::Result<Option<PathBuf>> 
     Ok(Some(path))
 }
 
+/// Creates a new file at `path`, or at `name (2).ext` etc. if it exists, never overwriting.
+pub fn create_new_numbered(path: &Path) -> std::io::Result<(File, PathBuf)> {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()));
+    let mut candidate = path.to_owned();
+    for n in 2.. {
+        match File::create_new(&candidate) {
+            Ok(file) => return Ok((file, candidate)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => {
+                let ext = ext.as_deref().unwrap_or("");
+                candidate.set_file_name(format!("{stem} ({n}){ext}"));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!()
+}
+
 pub fn write_png_rgba8(
     w: impl Write,
     width: u32,
@@ -610,6 +631,21 @@ pub fn cause_panic() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_new_numbered_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("niri-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+
+        let names: Vec<_> = (0..3)
+            .map(|_| create_new_numbered(&path).unwrap().1)
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(names, ["shot.png", "shot (2).png", "shot (3).png"]);
+    }
 
     #[test]
     fn test_clamp_preferring_top_left() {
