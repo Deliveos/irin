@@ -319,7 +319,15 @@ mod systemd {
                                 closefrom(raw + 1);
                             }
 
-                            let _ = read_all(pipe, &mut [0]);
+                            // Use a timeout: if exec fails in the grandchild, Command::spawn()
+                            // waits for us to exit before returning, so the parent would never
+                            // signal us.
+                            let mut pfd = libc::pollfd {
+                                fd: pipe.as_raw_fd(),
+                                events: libc::POLLIN,
+                                revents: 0,
+                            };
+                            libc::poll(&mut pfd, 1, 2000);
                         }
 
                         libc::_exit(0)
@@ -485,5 +493,21 @@ mod systemd {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn spawn_missing_command_returns() {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            super::spawn_sync("niri-test-command-that-does-not-exist", [""; 0], None);
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok());
     }
 }
