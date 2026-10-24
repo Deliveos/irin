@@ -1,128 +1,90 @@
-# Contributing to niri
+# Contributing to this niri fork
 
-Thanks for your interest in niri!
-The project has grown quite a bit, and we could use all help that we can.
+Thanks for your interest!
+This is a fork of [niri](https://github.com/niri-wm/niri).
+People and AI agents are both welcome to contribute: read the code, work on issues, review and open pull requests.
+Agents (and anyone new to the codebase) should start with [`AGENTS.md`](AGENTS.md), which covers orientation, how to pick work, the git workflow and the checks to run.
 
-Make sure to join our Matrix chat if you have any questions or want to discuss anything: https://matrix.to/#/#niri:matrix.org
+## AI agents and upstream
 
-## LLM policy
+You may use AI agents to write code, tests, issues, pull request descriptions and reviews here.
+You don't need to say whether you used one; a `Co-Authored-By:` trailer naming the model is welcome but not required.
 
-You're not allowed to use LLMs to *create*.
-All pull request code (including tests), issue descriptions, comments, public reviews, etc. must be human-written.
-You can use LLMs privately (not like I can check or control that), but not to write from scratch.
-You may use LLMs for *translating* your human-written text; in this case you must also provide the original text to reduce the chance of miscommunication.
+The person who runs the agent (or the pull request author) is responsible for the pull request.
+They must understand the change and be able to answer review on it.
 
-This policy is motivated by several observations:
+These rules apply only to this fork.
+Upstream [niri-wm/niri](https://github.com/niri-wm/niri) does not allow LLM-written code, issues or pull request descriptions (see its [`CONTRIBUTING.md`](https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md)).
+Agents never open pull requests, issues, comments or reviews in `niri-wm/niri`.
+Every pull request targets `main` of `Deliveos/niri`; since this repository is a GitHub fork, set the base repository explicitly (with `gh`: `gh repo set-default Deliveos/niri`).
 
-- LLM writing is always long and excessive, and wastes time of the reader.
-- LLM issue analysis is not only overly long and excessive, but also frequently wrong.
-- LLM-assisted PRs are usually a bigger chore to review, and the developer frequently struggles to adequately address comments.
-- For code contributions, our goal is to grow contributors with understanding of the niri codebase.
-    Using LLMs to write code sidesteps this learning process.
-- LLMs remove an important *effort barrier* for writing code, even if the result reads fine.
-    The code ends up overly complex to solve non-existing or impractical problems.
-    Such code would not get written in the first place since the effort-benefit ratio is too high.
-    It increases maintenance burden and takes time away from more important PRs.
+## Quality bar
 
-    This reasoning applies to test code too.
-    LLM-written tests tend to be overly verbose and hard to understand.
-    Since it's *effortless* to generate test code with LLMs, the tests frequently end up repeating themselves, testing things that are trivially true, or testing internal states of the system rather than the outcomes.
-    Such tests may be helpful for initial verification of a new feature, but they are a chore to review and disproportionately increase maintenance burden.
-- Nobody wants to read AI slop.
+These apply to everyone, whether a person or an agent wrote the change.
 
-## Issues and discussions
+- Keep pull request descriptions, issues and comments short and to the point.
+- Solve the problem at hand. Don't add complexity for problems that don't exist or are impractical.
+- Tests check outcomes, not internal state. Don't repeat yourself or test things that are trivially true.
+- Follow the style and structure of the surrounding code and of similar modules (e.g. when implementing a new protocol, look at the other protocol implementations).
 
-This is a good way to help many new and existing users without programming knowledge.
+## Issues
 
-- Answer and help people in GitHub issues and discussions.
-- Check and point out duplicate issues.
-- Check for issues that are likely application bugs (and not niri bugs).
-    - Ask or try to reproduce on another non-Smithay-based compositor (sway, KDE/KWin, GNOME/Mutter). If the issue reproduces, it's likely an application bug.
-    - Ask or try to reproduce on another *Smithay-based* compositor ([cosmic-comp], [anvil]). If the issue reproduces only on Smithay compositors, it may be a Smithay bug.
+- Check for duplicates and point them out.
+- Check whether an issue is likely an application bug rather than a niri bug.
+    - Try to reproduce on another non-Smithay-based compositor (sway, KDE/KWin, GNOME/Mutter). If the issue reproduces, it's likely an application bug.
+    - Try to reproduce on another *Smithay-based* compositor ([cosmic-comp], [anvil]). If the issue reproduces only on Smithay compositors, it may be a Smithay bug.
     - Make sure you're testing the Wayland version of the app on all compositors. Apps may silently use X11 when an X11 `$DISPLAY` is available.
-    - Problems with X11 apps should be reported to [xwayland-satellite]. When testing xwayland-satellite on different compositors, make sure you use xwayland-satellite's `$DISPLAY` (rather than another compositor's built-in Xwayland `$DISPLAY`).
-    - After testing, mention where you could and couldn't reproduce, as well as the exact steps to reproduce if the issue is missing them.
-- Try to reproduce the issue on your own system and write if you could or couldn't reproduce it.
-- Upvote issues with a thumbs up reaction as you like.
-- Ideas and feature requests from new users should go to Discussions.
+    - Problems with X11 apps belong to [xwayland-satellite]. When testing xwayland-satellite on different compositors, make sure you use xwayland-satellite's `$DISPLAY` (rather than another compositor's built-in Xwayland `$DISPLAY`).
+    - After testing, write where you could and couldn't reproduce, as well as the exact steps to reproduce if the issue is missing them.
+- If an issue is a duplicate, or not a niri issue (application bug, hardware problem, configuration problem), it should be closed.
 
-If your issue is a duplicate, or not a niri issue (application bug, hardware problem, configuration problem), then please close it.
+## Testing pull requests
 
-## Reviewing and testing pull requests
+Build the pull request and give it a go.
+`docs/wiki/Development:-Developing-niri.md` has guidance on running niri test builds.
 
-With the growing popularity, the volume of pull requests is honestly more than I can manage myself in my free time.
-I would really appreciate help with testing and reviewing them.
+Be thorough; we're striving for polished features, so point out any issues, even small ones like animation jank.
 
-### Testing
-
-Pick a pull request you like, then build it and give it a go.
-The [Developing niri wiki page](https://niri-wm.github.io/niri/Development:-Developing-niri) has guidance on running niri test builds.
-
-Be really thorough with your testing.
-We're striving for polished features in niri, so point out any issues and bugs, even small ones like animation jank.
-
-- Think of weird edge cases or unexpected interactions and try them to see that they work reasonably.
+- Think of weird edge cases or unexpected interactions and try them.
 - Try to break the feature and check that it behaves well.
 - Where applicable, try different input devices: keyboard, mouse, trackpad, tablet, touchscreen.
-- Watch out for any new performance drops.
+- Watch out for performance drops.
 
-For bug fixes, first make sure you can reproduce the bug, then do the same steps in the PR test build, and verify that the bug is fixed.
-Be similarly thorough: test any similar or related edge cases to verify that the fix doesn't introduce any new problems.
+For bug fixes, first reproduce the bug, then repeat the same steps on the pull request build and verify that the bug is fixed.
+Test similar and related edge cases too, to check that the fix doesn't introduce new problems.
 
-Write your findings in the pull request: any issues you found, or if everything worked well.
-Re-test after the author updates the code to see that your issues were fixed.
+Write your findings in the pull request, and re-test after the author updates the code.
+Only report testing you actually did.
 
-Don't hesitate to test even if someone else already did; very frequently different people will stumble upon different problems.
+Changes users can see (layout, animations, input, rendering) are tested by hand by a human before they are merged.
 
-### Reviewing
+## Reviewing pull requests
 
-Reviewing pull requests is something I need the most help with since there are a lot of them, and it's quite time-consuming.
-Anyone with code accepted into niri is welcome, but this is not a requirement; even if you aren't familiar with Rust you may find some logic problems.
+- Check the logic and edge cases; look for scenarios the author didn't handle.
+- Check that the code fits into the rest of niri and follows its design and code style.
+- Check for unrelated changes that should be a separate pull request.
+- Check that the wiki was updated where needed (e.g. new config options documented with examples and `<sup>Since: next release</sup>`).
 
-Pick a pull request, then review its code.
-
-- Check that everything looks good, check various conditions for edge cases.
-- See if there are any scenarios the author forgot to handle.
-- Check that the code fits well into the rest of niri, follows its design and code style.
-    - I understand this is vague. The idea is: look at the surrounding code and at similar modules (e.g. when implementing a new protocol, check other protocol implementations), and try to follow the style and structure.
-- Check for unrelated changes that may be better split into their own pull request.
-- Check that the wiki had been updated if necessary (for example, new config options were documented with examples, and have a correct Since annotation).
-
-Point out everything you find as review comments (don't forget to submit the review).
-Be constructive and respectful; some people may be new to programming and Rust.
-As the author addresses the comments and issues, check the code again to see that the problems were fixed.
-If everything looks good, say that, so I know someone has reviewed the PR.
-
-As with testing, don't hesitate to look through and comment even if someone else already had.
-Extra pairs of eyes catch more problems.
+Point out everything you find as review comments, and be constructive and respectful.
+If everything looks good, say so.
+Reviews and approvals from agents are comments only: only a human approves and merges.
 
 ## Writing pull requests
 
-When creating pull requests, please keep the following in mind.
-
-- Make sure new features align with niri's design directions. Ideally, there should be an existing issue or discussion where we settled on that solution.
-- Keep pull requests focused on a single feature or bug fix with no unrelated changes.
-- Document unobvious design and architecture decisions. Why you chose one way over the other, which alternatives you tried. This helps to evaluate the code.
-- Try to split your changes into small, self-contained commits. Every commit should build and pass tests. This makes it much easier to review your PR, and bisect for regressions in the future.
-    - When addressing PR comments, try to squash the changes straight into the relevant commits.
-    - In some cases when the requested changes are big/unclear, you can leave them as separate commits on top, but please squash and otherwise clean up the history when the changes are finalized.
-    - To update the main branch, please rebase instead of merging. Try to force-push the main update rebase separately from other changes, this way it's easy to skip during review since it's usually not interesting.
-    - When working on bigger features, I usually start with a big messy commit, then gradually split out smaller self-contained changes from it as the code gets into shape.
-    - [git-rebase.io](https://git-rebase.io/) is a helpful guide for splitting commits and cleaning up history in git.
-- When you address a review comment, mark it as resolved.
-- Remember to [run tests](https://niri-wm.github.io/niri/Development:-Developing-niri#tests) and format the code with `cargo +nightly fmt --all`.
-- For new layout actions, remember to add them to the randomized tests. For weird Wayland handling, adding client-server tests in `src/tests/` could be very useful.
-- Test your changes by hand thoroughly, including for edge cases and weird interactions. See the Testing section above for some tips.
-- Remember to document new config options on the wiki.
-- When opening a pull request, ensure "Allow edits from maintainers" is enabled, so I can make final tweaks before merging.
-
-### How to get your pull request reviewed more quickly
-
-- Make it small and self-contained. Avoid mixing several unrelated changes in one PR.
-- Split the PR into small and self-contained commits. This makes it much easier to review.
-- Discuss new features, options, or behavior changes beforehand; make sure there's consensus about the design.
-- When creating the pull request, clearly write what it does, what problem it solves, how to test it.
-- Follow the rest of the advice from this document.
+- Make sure new features fit niri's design (`docs/wiki/Development:-Design-Principles.md`). Ideally there's an issue where the solution was agreed on.
+- Link the issues you fix. One commit per issue, with `Fixes #N` (or `Part of #N`) in the commit message.
+    Closely related issues may share a pull request; unrelated ones get their own.
+- Keep pull requests free of unrelated changes.
+- Document unobvious design and architecture decisions: why you chose one way over another, and which alternatives you tried.
+- Every commit should build and pass tests. This makes review and bisecting much easier.
+    - When addressing review comments, squash the changes into the relevant commits.
+    - Update from `main` by rebasing, not merging.
+    - [git-rebase.io](https://git-rebase.io/) is a helpful guide for splitting commits and cleaning up history.
+- Mark review comments as resolved once you address them.
+- Run `cargo +nightly fmt --all`, `cargo clippy --all --all-targets` and `cargo test --all --exclude niri-visual-tests` (see Tests in `docs/wiki/Development:-Developing-niri.md`). CI runs the rest.
+- For new layout operations, add them to the randomized tests (`Op` in `src/layout/tests.rs`). For weird Wayland handling, client-server tests in `src/tests/` are very useful. Crash fixes come with a regression test where possible.
+- Document new config options in `docs/wiki/` and add them to the config parsing test.
+- Fill in the pull request template, including how you tested the change.
 
 
 [cosmic-comp]: https://github.com/pop-os/cosmic-comp

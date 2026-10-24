@@ -1,16 +1,31 @@
-## Description
+## Summary
 
-<!-- Please read the pull request guidelines in https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md and make sure your pull request follows them. -->
+<!-- What changes and why. Keep it short. -->
+<!-- One line per issue: Fixes #N (or Part of #N). -->
 
-<!-- Write a summary of the change, linking relevant issues and discussions. -->
-<!-- Mention how to test the change, and how you already tested it. -->
-<!-- When adding new config syntax, please provide an example. -->
-<!-- Write about any unobvious architecture and design decisions that you took, explain the alternatives you considered. -->
+## How it was tested
+
+**Automated:**
+
+- [ ] `cargo +nightly fmt --all`
+- [ ] `cargo clippy --all --all-targets`
+- [ ] `cargo test --all --exclude niri-visual-tests`
+
+**Manual:**
+
+<!-- What you did by hand and what you saw, or write "Not tested by hand." -->
+
+## Notes for reviewers
+
+<!-- Unobvious design decisions and the alternatives you considered. -->
+<!-- For new config syntax, give an example. -->
 
 ## Checklist
 
-<!-- You can put an x inside the following checkboxes to check them. -->
-* [ ] I ran tests and `cargo +nightly fmt`.
+<!-- Tick the items that apply; delete the ones that don't. -->
 
-<!-- We do not allow LLM-written pull request code and descriptions. -->
-* [ ] I did not use an LLM to write this pull request code or description.
+- [ ] One commit per issue, each with `Fixes #N` / `Part of #N`; every commit builds.
+- [ ] New config options are documented in `docs/wiki/` with `<sup>Since: next release</sup>` and added to the config parsing test.
+- [ ] New layout operations are added to `Op` in `src/layout/tests.rs`.
+
+<!-- Guidelines: https://github.com/Deliveos/niri/blob/main/CONTRIBUTING.md and AGENTS.md -->
