@@ -909,6 +909,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         is_full_width: bool,
         anim: Option<niri_config::Animation>,
     ) {
+        // The tile may come from another workspace with different options; the column reads
+        // things like default-column-display from them.
+        let mut tile = tile;
+        tile.update_config(self.view_size, self.scale, self.options.clone());
+
         let column = Column::new_with_tile(
             tile,
             self.view_size,

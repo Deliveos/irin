@@ -850,7 +850,17 @@ impl OutputManagementHandler for State {
     }
 
     fn apply_output_config(&mut self, config: niri_config::Outputs) {
-        self.niri.config.borrow_mut().outputs = config;
+        // The request only covers connected outputs; keep config for the others.
+        {
+            let outputs = &mut self.niri.config.borrow_mut().outputs.0;
+            outputs.retain(|old| {
+                !config
+                    .0
+                    .iter()
+                    .any(|new| new.name.eq_ignore_ascii_case(&old.name))
+            });
+            outputs.extend(config.0);
+        }
         self.reload_output_config();
     }
 }

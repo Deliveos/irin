@@ -1753,6 +1753,10 @@ impl State {
             reload_xkb = true;
         }
 
+        #[cfg(feature = "dbus")]
+        let power_key_handling_changed =
+            config.input.disable_power_key_handling != old_config.input.disable_power_key_handling;
+
         // Reload the repeat info.
         if config.input.keyboard.repeat_rate != old_config.input.keyboard.repeat_rate
             || config.input.keyboard.repeat_delay != old_config.input.keyboard.repeat_delay
@@ -1890,6 +1894,17 @@ impl State {
         // Now with a &mut self we can reload the xkb config.
         if reload_xkb {
             self.load_configured_keymap();
+        }
+
+        // The key mapping follows the config, so the logind inhibitor must too, otherwise logind
+        // also acts on the power key (by default powering off).
+        #[cfg(feature = "dbus")]
+        if power_key_handling_changed && self.niri.is_session_instance {
+            if self.niri.config.borrow().input.disable_power_key_handling {
+                self.niri.inhibit_power_key_fd = None;
+            } else if let Err(err) = self.niri.inhibit_power_key() {
+                warn!("error inhibiting power key: {err:?}");
+            }
         }
 
         if libinput_config_changed {
