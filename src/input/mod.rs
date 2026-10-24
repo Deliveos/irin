@@ -121,16 +121,8 @@ impl<D: SeatHandler + TabletSeatHandler> AnyStartData<D> {
         }
     }
 
-    pub fn is_pointer(&self) -> bool {
-        matches!(self, Self::Pointer(_))
-    }
-
     pub fn is_touch(&self) -> bool {
         matches!(self, Self::Touch(_))
-    }
-
-    pub fn is_tablet_tool(&self) -> bool {
-        matches!(self, Self::TabletTool(_))
     }
 }
 
@@ -164,11 +156,10 @@ impl State {
             self.niri.reset_pointer_inactivity_timer();
         }
 
-        let hide_hotkey_overlay =
-            self.niri.hotkey_overlay.is_open() && should_hide_hotkey_overlay(&event);
+        let hide_hotkey_overlay = self.niri.hotkey_overlay.is_open() && should_hide_overlay(&event);
 
         let hide_exit_confirm_dialog =
-            self.niri.exit_confirm_dialog.is_open() && should_hide_exit_confirm_dialog(&event);
+            self.niri.exit_confirm_dialog.is_open() && should_hide_overlay(&event);
 
         let mut consumed_by_a11y = false;
         use InputEvent::*;
@@ -4826,22 +4817,7 @@ fn should_activate_monitors<I: InputBackend>(event: &InputEvent<I>) -> bool {
     }
 }
 
-fn should_hide_hotkey_overlay<I: InputBackend>(event: &InputEvent<I>) -> bool {
-    match event {
-        InputEvent::Keyboard { event } if event.state() == KeyState::Pressed => true,
-        InputEvent::PointerButton { event } if event.state() == ButtonState::Pressed => true,
-        InputEvent::PointerAxis { .. }
-        | InputEvent::GestureSwipeBegin { .. }
-        | InputEvent::GesturePinchBegin { .. }
-        | InputEvent::TouchDown { .. }
-        | InputEvent::TouchMotion { .. }
-        | InputEvent::TabletToolTip { .. }
-        | InputEvent::TabletToolButton { .. } => true,
-        _ => false,
-    }
-}
-
-fn should_hide_exit_confirm_dialog<I: InputBackend>(event: &InputEvent<I>) -> bool {
+fn should_hide_overlay<I: InputBackend>(event: &InputEvent<I>) -> bool {
     match event {
         InputEvent::Keyboard { event } if event.state() == KeyState::Pressed => true,
         InputEvent::PointerButton { event } if event.state() == ButtonState::Pressed => true,
