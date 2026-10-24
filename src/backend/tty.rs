@@ -2034,6 +2034,10 @@ impl Tty {
         rv
     }
 
+    pub fn is_session_active(&self) -> bool {
+        self.session.is_active()
+    }
+
     pub fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             warn!("error changing VT: {err}");

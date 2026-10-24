@@ -4951,7 +4951,13 @@ impl Niri {
         // If we're in process of locking the session, check if the requirements were met.
         match mem::take(&mut self.lock_state) {
             LockState::Locking(confirmation) => {
-                if state.lock_render_state == LockRenderState::Unlocked {
+                if state.lock_render_state == LockRenderState::Unlocked
+                    && !backend.is_session_active()
+                {
+                    // We're on another VT and can't render. Keep locking; the redraw on session
+                    // resume will finish the lock before anything is shown.
+                    self.lock_state = LockState::Locking(confirmation);
+                } else if state.lock_render_state == LockRenderState::Unlocked {
                     // We needed to render a locked frame on this output but failed.
                     self.unlock();
                 } else {
