@@ -64,6 +64,8 @@ impl Spring {
         // and general estimation for the oscillating ones
         // we take the value of the envelope when it's < epsilon.
         let mut x0 = -self.params.epsilon.ln() / beta;
+        // Newton below can step to negative or non-finite times; fall back to this estimate.
+        let envelope_estimate = Duration::from_secs_f64(x0);
 
         // f64::EPSILON is too small for this specific comparison, so we use
         // f32::EPSILON even though it's doubles.
@@ -97,13 +99,13 @@ impl Spring {
 
             // Overdamped springs have some numerical stability issues...
             if !y1.is_finite() {
-                return Duration::from_secs_f64(x0);
+                return Duration::try_from_secs_f64(x0).unwrap_or(envelope_estimate);
             }
 
             i += 1;
         }
 
-        Duration::from_secs_f64(x1)
+        Duration::try_from_secs_f64(x1).unwrap_or(envelope_estimate)
     }
 
     /// Computes and returns the duration until the spring reaches its target position.
@@ -192,6 +194,17 @@ mod tests {
         let _ = spring.duration();
         let _ = spring.clamped_duration();
         let _ = spring.value_at(Duration::ZERO);
+    }
+
+    #[test]
+    fn overdamped_spring_fast_velocity_negative_duration() {
+        let spring = Spring {
+            from: -10.,
+            to: 0.,
+            initial_velocity: 5000.,
+            params: SpringParams::new(4., 500., 0.1),
+        };
+        let _ = spring.duration();
     }
 
     #[test]

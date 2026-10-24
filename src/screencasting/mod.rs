@@ -726,8 +726,11 @@ impl Niri {
             }
         }
 
-        let dbus = &self.dbus.as_ref().unwrap();
-        let server = dbus.conn_screen_cast.as_ref().unwrap().object_server();
+        // Not running in non-session instances.
+        let Some(conn) = self.dbus.as_ref().and_then(|d| d.conn_screen_cast.as_ref()) else {
+            return;
+        };
+        let server = conn.object_server();
         let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id.get());
         if let Ok(iface) = server.interface::<_, mutter_screen_cast::Session>(path) {
             let _span = tracy_client::span!("invoking Session::stop");

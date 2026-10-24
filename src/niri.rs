@@ -3035,8 +3035,15 @@ impl Niri {
 
             let size = output_size(&output).to_i32_round();
 
+            // Clamp so that later position + size math can't overflow i32.
+            const MAX_POS: i32 = 1 << 24;
             let new_position = config
-                .map(|pos| Point::from((pos.x, pos.y)))
+                .map(|pos| {
+                    Point::from((
+                        pos.x.clamp(-MAX_POS, MAX_POS),
+                        pos.y.clamp(-MAX_POS, MAX_POS),
+                    ))
+                })
                 .filter(|pos| {
                     // Ensure that the requested position does not overlap any existing output.
                     let target_geom = Rectangle::new(*pos, size);
@@ -3197,6 +3204,8 @@ impl Niri {
     pub fn remove_output(&mut self, output: &Output) {
         for layer in layer_map_for_output(output).layers() {
             layer.layer_surface().send_close();
+            // layer_destroyed() won't find it once the output is gone.
+            self.mapped_layer_surfaces.remove(layer);
         }
 
         self.layout.remove_output(output);

@@ -2861,16 +2861,17 @@ impl State {
                 is_mru_open = true;
                 if let Some(MouseButton::Left) = button {
                     let location = pointer.current_location();
-                    let (output, pos_within_output) = self.niri.output_under(location).unwrap();
-                    if mru_output == output {
-                        let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                        if id.is_some() {
-                            self.confirm_mru();
-                        } else {
-                            self.niri.cancel_mru();
+                    // The pointer can be on no output, e.g. after its output was unplugged.
+                    match self.niri.output_under(location) {
+                        Some((output, pos_within_output)) if mru_output == output => {
+                            let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
+                            if id.is_some() {
+                                self.confirm_mru();
+                            } else {
+                                self.niri.cancel_mru();
+                            }
                         }
-                    } else {
-                        self.niri.cancel_mru();
+                        _ => self.niri.cancel_mru(),
                     }
 
                     self.niri.suppressed_buttons.insert(button_code);

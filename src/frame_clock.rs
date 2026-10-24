@@ -12,12 +12,10 @@ pub struct FrameClock {
 
 impl FrameClock {
     pub fn new(refresh_interval: Option<Duration>, vrr: bool) -> Self {
-        let refresh_interval_ns = if let Some(interval) = &refresh_interval {
-            assert_eq!(interval.as_secs(), 0);
-            Some(NonZeroU64::new(interval.subsec_nanos().into()).unwrap())
-        } else {
-            None
-        };
+        // Treat out-of-range intervals (very low refresh custom modes) as unknown.
+        let refresh_interval_ns = refresh_interval
+            .filter(|interval| interval.as_secs() == 0)
+            .and_then(|interval| NonZeroU64::new(interval.subsec_nanos().into()));
 
         Self {
             last_presentation_time: None,

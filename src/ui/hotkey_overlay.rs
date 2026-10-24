@@ -331,6 +331,8 @@ fn render(
             (key, action)
         })
         .collect::<Vec<_>>();
+    // Can be empty with hide-not-bound.
+    anyhow::ensure!(!strings.is_empty(), "no hotkeys to show");
 
     let mut font = FontDescription::from_string(FONT);
     font.set_absolute_size(to_physical_precise_round(scale, font.size()));
@@ -713,5 +715,16 @@ mod tests {
             ),
             @" Super + P : Hello"
         );
+    }
+
+    #[test]
+    fn hide_not_bound_with_no_binds_has_nothing_to_render() {
+        // render() must bail out on this instead of measuring an empty list.
+        let config = Config::parse_mem("hotkey-overlay { hide-not-bound; }").unwrap();
+        let strings: Vec<_> = collect_actions(&config)
+            .into_iter()
+            .filter_map(|action| format_bind(&config.binds.0, action))
+            .collect();
+        assert!(strings.is_empty());
     }
 }
