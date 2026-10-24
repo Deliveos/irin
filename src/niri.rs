@@ -3197,6 +3197,8 @@ impl Niri {
     pub fn remove_output(&mut self, output: &Output) {
         for layer in layer_map_for_output(output).layers() {
             layer.layer_surface().send_close();
+            // layer_destroyed() won't find it once the output is gone.
+            self.mapped_layer_surfaces.remove(layer);
         }
 
         self.layout.remove_output(output);
