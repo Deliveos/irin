@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -133,7 +134,7 @@ use crate::dbus::freedesktop_login1::Login1ToNiri;
 #[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_introspect::{self, IntrospectToNiri, NiriToIntrospect};
 #[cfg(feature = "dbus")]
-use crate::dbus::gnome_shell_screenshot::{NiriToScreenshot, ScreenshotToNiri};
+use crate::dbus::gnome_shell_screenshot::ScreenshotToNiri;
 use crate::frame_clock::FrameClock;
 use crate::handlers::image_copy_capture::{
     self as image_copy_capture_impl, CaptureBuffer, ImageCopyCursorSession, ImageCopySession,
@@ -189,9 +190,9 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
-    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
-    send_scale_transform, winit_scale, write_png_rgba8, xwayland,
+    center, center_f64, create_new_numbered, expand_home, get_monotonic_time,
+    ipc_transform_to_smithay, is_mapped, logical_output, make_screenshot_path, output_matches_name,
+    output_size, panel_orientation, send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -2371,14 +2372,13 @@ impl State {
     pub fn set_dynamic_cast_target(&mut self, _target: CastTarget) {}
 
     #[cfg(feature = "dbus")]
-    pub fn on_screen_shot_msg(
-        &mut self,
-        to_screenshot: &async_channel::Sender<NiriToScreenshot>,
-        msg: ScreenshotToNiri,
-    ) {
+    pub fn on_screen_shot_msg(&mut self, msg: ScreenshotToNiri) {
         match msg {
-            ScreenshotToNiri::TakeScreenshot { include_cursor } => {
-                self.handle_take_screenshot(to_screenshot, include_cursor);
+            ScreenshotToNiri::TakeScreenshot {
+                include_cursor,
+                reply,
+            } => {
+                self.handle_take_screenshot(include_cursor, reply);
             }
             ScreenshotToNiri::PickColor(tx) => {
                 self.handle_pick_color(tx);
@@ -2389,42 +2389,26 @@ impl State {
     #[cfg(feature = "dbus")]
     fn handle_take_screenshot(
         &mut self,
-        to_screenshot: &async_channel::Sender<NiriToScreenshot>,
         include_cursor: bool,
+        reply: async_channel::Sender<PathBuf>,
     ) {
         let _span = tracy_client::span!("TakeScreenshot");
 
-        let rv = self.backend.with_primary_renderer(|renderer| {
-            let on_done = {
-                let to_screenshot = to_screenshot.clone();
-                move |path| {
-                    let msg = NiriToScreenshot::ScreenshotResult(Some(path));
-                    if let Err(err) = to_screenshot.send_blocking(msg) {
-                        warn!("error sending path to screenshot: {err:?}");
-                    }
+        // On any failure, `reply` is dropped without sending, and the caller gets an error.
+        self.backend.with_primary_renderer(|renderer| {
+            let on_done = move |path| {
+                if let Err(err) = reply.send_blocking(path) {
+                    warn!("error sending path to screenshot: {err:?}");
                 }
             };
 
             let res = self
                 .niri
                 .screenshot_all_outputs(renderer, include_cursor, on_done);
-
             if let Err(err) = res {
                 warn!("error taking a screenshot: {err:?}");
-
-                let msg = NiriToScreenshot::ScreenshotResult(None);
-                if let Err(err) = to_screenshot.send_blocking(msg) {
-                    warn!("error sending None to screenshot: {err:?}");
-                }
             }
         });
-
-        if rv.is_none() {
-            let msg = NiriToScreenshot::ScreenshotResult(None);
-            if let Err(err) = to_screenshot.send_blocking(msg) {
-                warn!("error sending None to screenshot: {err:?}");
-            }
-        }
     }
 
     #[cfg(feature = "dbus")]
@@ -6472,8 +6456,15 @@ impl Niri {
                     }
                 }
 
-                match std::fs::write(&path, buf) {
-                    Ok(()) => image_path = Some(path),
+                // Generated names have one-second precision, so don't overwrite those.
+                let res = if create_parent {
+                    create_new_numbered(&path)
+                        .and_then(|(mut file, path)| file.write_all(&buf).map(|()| path))
+                } else {
+                    std::fs::write(&path, &buf).map(|()| path)
+                };
+                match res {
+                    Ok(path) => image_path = Some(path),
                     Err(err) => {
                         warn!("error saving screenshot image: {err:?}");
                     }
@@ -6593,19 +6584,30 @@ impl Niri {
             .context("error mapping texture")?;
         let pixels = copy.to_vec();
 
-        let path = make_screenshot_path(&self.config.borrow())
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                let mut path = env::temp_dir();
-                path.push("screenshot.png");
-                path
-            });
+        let path = make_screenshot_path(&self.config.borrow()).ok().flatten();
         debug!("saving screenshot to {path:?}");
 
         thread::spawn(move || {
-            let file = match std::fs::File::create(&path) {
-                Ok(file) => file,
+            let res = match path {
+                Some(path) => {
+                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        if let Err(err) = std::fs::create_dir_all(parent) {
+                            warn!("error creating screenshot directory: {err:?}");
+                        }
+                    }
+                    create_new_numbered(&path)
+                }
+                None => {
+                    // Not /tmp: that is readable by other users.
+                    let mut path = directories::BaseDirs::new()
+                        .and_then(|d| d.runtime_dir().map(|d| d.to_owned()))
+                        .unwrap_or_else(env::temp_dir);
+                    path.push("screenshot.png");
+                    std::fs::File::create(&path).map(|file| (file, path))
+                }
+            };
+            let (file, path) = match res {
+                Ok(x) => x,
                 Err(err) => {
                     warn!("error creating file: {err:?}");
                     return;
