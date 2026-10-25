@@ -109,6 +109,8 @@ pub struct Cast {
     last_frame_time: Duration,
     last_frame_interval: Duration,
     scheduled_redraw: Option<RegistrationToken>,
+    /// Retry after a frame was skipped for lack of a free buffer.
+    retry_redraw: Option<RegistrationToken>,
     // Incremented once per successful frame, stored in buffer meta.
     sequence_counter: u64,
     inner: Rc<RefCell<CastInner>>,
@@ -955,6 +957,7 @@ impl PipeWire {
             last_frame_time: Duration::ZERO,
             last_frame_interval: Duration::ZERO,
             scheduled_redraw: None,
+            retry_redraw: None,
             sequence_counter: 0,
             inner,
         };
@@ -1104,6 +1107,33 @@ impl Cast {
             })
             .unwrap();
         self.scheduled_redraw = Some(token);
+    }
+
+    /// Schedules another attempt after a frame was skipped for lack of a free buffer.
+    ///
+    /// Nothing redraws the cast when the consumer gives a buffer back, so without this, a frame
+    /// skipped right before the screen goes still would never be sent.
+    fn schedule_retry(&mut self) {
+        if self.retry_redraw.is_some() {
+            return;
+        }
+
+        let interval = self.inner.borrow().min_time_between_frames;
+        let timer = Timer::from_duration(interval.max(Duration::from_millis(10)));
+        let stream_id = self.stream_id;
+        let token = self
+            .event_loop
+            .insert_source(timer, move |_, _, state| {
+                let casts = &mut state.niri.casting.casts;
+                if let Some(cast) = casts.iter_mut().find(|cast| cast.stream_id == stream_id) {
+                    cast.retry_redraw = None;
+                    state.redraw_cast(stream_id);
+                }
+
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        self.retry_redraw = Some(token);
     }
 
     fn remove_scheduled_redraw(&mut self) {
@@ -1301,6 +1331,8 @@ impl Cast {
                 *last_cursor_location = None;
             }
             inner.note_no_buffer();
+            drop(inner);
+            self.schedule_retry();
             return false;
         };
         let buffer = pw_buffer.as_ptr();
@@ -1387,6 +1419,7 @@ impl Cast {
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
             self.inner.borrow_mut().note_no_buffer();
+            self.schedule_retry();
             return false;
         };
         let buffer = pw_buffer.as_ptr();
