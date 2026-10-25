@@ -487,11 +487,12 @@ impl Niri {
         let mut seen = HashSet::new();
         let mut output_changed = vec![];
 
-        self.layout.with_windows(|mapped, output, _, _| {
+        // Not with_windows(): that also builds IPC layouts, which we don't need.
+        for (mon, mapped) in self.layout.windows() {
             seen.insert(mapped.window.clone());
 
-            let Some(output) = output else {
-                return;
+            let Some(output) = mon.map(|mon| mon.output()) else {
+                continue;
             };
 
             match self.casting.mapped_cast_output.entry(mapped.window.clone()) {
@@ -505,7 +506,7 @@ impl Niri {
                     entry.insert(output.clone());
                 }
             }
-        });
+        }
 
         self.casting
             .mapped_cast_output
