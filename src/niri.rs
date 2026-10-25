@@ -406,6 +406,7 @@ pub struct Niri {
     pub pointer_contents: PointContents,
     pub pointer_visibility: PointerVisibility,
     pub pointer_inactivity_timer: Option<RegistrationToken>,
+    pub pointer_last_activity: Duration,
     /// Whether the pointer inactivity timer got reset this event loop iteration.
     ///
     /// Used for limiting the reset to once per iteration, so that it's not spammed with high
@@ -1941,6 +1942,9 @@ impl State {
 
         if cursor_inactivity_timeout_changed {
             // Force reset due to timeout change.
+            if let Some(token) = self.niri.pointer_inactivity_timer.take() {
+                self.niri.event_loop.remove(token);
+            }
             self.niri.pointer_inactivity_timer_got_reset = false;
             self.niri.reset_pointer_inactivity_timer();
         }
@@ -2862,6 +2866,7 @@ impl Niri {
             pointer_contents: PointContents::default(),
             pointer_visibility: PointerVisibility::Visible,
             pointer_inactivity_timer: None,
+            pointer_last_activity: Duration::ZERO,
             pointer_inactivity_timer_got_reset: false,
             notified_activity_this_iteration: false,
             pointer_inside_hot_corner: false,
@@ -7188,12 +7193,16 @@ impl Niri {
         if self.pointer_inactivity_timer_got_reset {
             return;
         }
+        self.pointer_inactivity_timer_got_reset = true;
+        self.pointer_last_activity = get_monotonic_time();
+
+        // An existing timer pushes itself back to the last activity when it fires, so motion
+        // doesn't recreate it on every event.
+        if self.pointer_inactivity_timer.is_some() {
+            return;
+        }
 
         let _span = tracy_client::span!("Niri::reset_pointer_inactivity_timer");
-
-        if let Some(token) = self.pointer_inactivity_timer.take() {
-            self.event_loop.remove(token);
-        }
 
         let Some(timeout_ms) = self.config.borrow().cursor.hide_after_inactive_ms else {
             return;
@@ -7204,21 +7213,30 @@ impl Niri {
         let token = self
             .event_loop
             .insert_source(timer, move |_, _, state| {
-                state.niri.pointer_inactivity_timer = None;
+                let niri = &mut state.niri;
+                let timeout = niri.config.borrow().cursor.hide_after_inactive_ms;
+                if let Some(timeout_ms) = timeout {
+                    let deadline =
+                        niri.pointer_last_activity + Duration::from_millis(timeout_ms as u64);
+                    let now = get_monotonic_time();
+                    if now < deadline {
+                        return TimeoutAction::ToDuration(deadline - now);
+                    }
+                }
+
+                niri.pointer_inactivity_timer = None;
 
                 // If the pointer is already invisible, don't reset it back to Hidden causing one
                 // frame of hover.
-                if state.niri.pointer_visibility.is_visible() {
-                    state.niri.pointer_visibility = PointerVisibility::Hidden;
-                    state.niri.queue_redraw_all();
+                if timeout.is_some() && niri.pointer_visibility.is_visible() {
+                    niri.pointer_visibility = PointerVisibility::Hidden;
+                    niri.queue_redraw_all();
                 }
 
                 TimeoutAction::Drop
             })
             .unwrap();
         self.pointer_inactivity_timer = Some(token);
-
-        self.pointer_inactivity_timer_got_reset = true;
     }
 
     pub fn notify_activity(&mut self) {
