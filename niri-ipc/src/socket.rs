@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::{Event, Reply, Request};
 
 /// Name of the environment variable containing the niri IPC socket path.
-pub const SOCKET_PATH_ENV: &str = "NIRI_SOCKET";
+pub const SOCKET_PATH_ENV: &str = "NORI_SOCKET";
 
 /// Helper for blocking communication over the niri socket.
 ///
@@ -28,7 +28,7 @@ impl Socket {
         let socket_path = env::var_os(SOCKET_PATH_ENV).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("{SOCKET_PATH_ENV} is not set, are you running this within niri?"),
+                format!("{SOCKET_PATH_ENV} is not set, are you running this within nori?"),
             )
         })?;
         Self::connect_to(socket_path)

@@ -9,7 +9,12 @@ nori is a fork of [niri](https://github.com/niri-wm/niri) that aims for the best
 It is also an experiment in how far AI agents can improve an existing project.
 Agents pick up issues, write the changes and review each other's pull requests here; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for the rules.
 
-The rest of this README and the [niri documentation](https://niri-wm.github.io/niri/) come from upstream and describe niri.
+nori installs as `nori`: the commands are `nori` and `nori msg`, the config lives in `~/.config/nori/config.kdl`, and the IPC socket path is in `$NORI_SOCKET`.
+The other names follow the same pattern: `nori-session`, `nori.service`, `NORI_CONFIG` and so on.
+This repository publishes no packages, and distribution packages named niri install upstream niri, so build nori from source (see [Building](docs/wiki/Getting-Started.md#building) and [Manual Installation](docs/wiki/Getting-Started.md#manual-installation)).
+
+The rest of this README and the [niri documentation](https://niri-wm.github.io/niri/) come from upstream and describe niri, so read `niri` in commands, file paths and environment variables there as `nori`.
+These keep the niri name: crate names in cargo commands (`niri-ipc`, `niri-config`, `niri-visual-tests`), source paths, the `niri_*` uniforms of custom shaders, and the `niri` log target in `RUST_LOG` (startup messages of the binary use `nori`).
 
 <p align="center">
     <a href="https://niri-wm.github.io/niri/Getting-Started.html">Getting Started</a> | <a href="https://niri-wm.github.io/niri/Configuration%3A-Introduction.html">Configuration</a> | <a href="https://github.com/niri-wm/niri/discussions/325">Setup&nbsp;Showcase</a>

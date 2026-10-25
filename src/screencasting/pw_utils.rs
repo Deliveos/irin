@@ -442,7 +442,7 @@ impl PipeWire {
 
         let stream = StreamRc::new(
             self.core.clone(),
-            "niri-screen-cast-src",
+            "nori-screen-cast-src",
             PropertiesBox::new(),
         )
         .context("error creating Stream")?;
@@ -1792,7 +1792,7 @@ enum SharingBuf {
 fn allocate_shmbuf(size: Size<u32, Physical>) -> anyhow::Result<Shmbuf> {
     let layout = ShmLayout::new(size)?;
     let fd = memfd_create(
-        "niri-pw-stream-memfd",
+        "nori-pw-stream-memfd",
         MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
     )
     .context("error creating memfd")?;

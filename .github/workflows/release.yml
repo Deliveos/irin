@@ -46,7 +46,7 @@ jobs:
         run: |
           mkdir .cargo
           cargo vendor --locked > .cargo/config.toml
-          tar cJf niri-${{ github.event.inputs.version }}-vendored-dependencies.tar.xz vendor/
+          tar cJf nori-${{ github.event.inputs.version }}-vendored-dependencies.tar.xz vendor/
 
       - name: Build
         run: cargo build --all --frozen --release
@@ -62,5 +62,5 @@ jobs:
         with:
           draft: true
           tag_name: v${{ github.event.inputs.version }}
-          files: niri-${{ github.event.inputs.version }}-vendored-dependencies.tar.xz
+          files: nori-${{ github.event.inputs.version }}-vendored-dependencies.tar.xz
           fail_on_unmatched_files: true

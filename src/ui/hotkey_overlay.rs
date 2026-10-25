@@ -461,7 +461,7 @@ fn render(
 
 fn action_name(action: &Action) -> String {
     match action {
-        Action::Quit(_) => String::from("Exit niri"),
+        Action::Quit(_) => String::from("Exit nori"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
         Action::FocusColumnLeft => String::from("Focus Column to the Left"),

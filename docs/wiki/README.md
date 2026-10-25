@@ -1,5 +1,9 @@
 Welcome to the niri documentation!
 
+This copy is part of nori, a fork of niri, and its pages come from upstream and still say niri.
+In nori, the commands, files and environment variables they mention are named `nori` instead of `niri`: `nori msg`, `nori-session`, `nori.service`, `~/.config/nori/config.kdl`, `$NORI_SOCKET`, `$NORI_CONFIG` and so on.
+These keep the niri name: crate names in cargo commands (`niri-ipc`, `niri-config`, `niri-visual-tests`), source paths, the `niri_*` uniforms of custom shaders, and the `niri` log target in `RUST_LOG` (startup messages of the binary use `nori`).
+
 Feel free to look through usage and [Getting started](./Getting-Started.md).
 If you're looking for ways to configure niri, check out the [introduction to configuration](./Configuration:-Introduction.md).
 
