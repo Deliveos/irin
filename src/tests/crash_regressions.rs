@@ -208,3 +208,66 @@ fn name_first_workspace_on_unfocused_monitor() {
     f.niri().layout.switch_workspace(0);
     f.niri_complete_animations();
 }
+
+#[test]
+fn ipc_request_size_is_bounded() {
+    use std::io::{ErrorKind, Read as _, Write as _};
+    use std::os::unix::net::UnixStream;
+
+    let mut f = Fixture::new();
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client.set_nonblocking(true).unwrap();
+    crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
+
+    // A normal request still gets its reply.
+    client.write_all(b"\"Version\"\n").unwrap();
+    let mut reply = Vec::new();
+    for _ in 0..100 {
+        f.state.server.dispatch();
+        let mut buf = [0; 256];
+        match client.read(&mut buf) {
+            Ok(n) => reply.extend_from_slice(&buf[..n]),
+            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+            Err(err) => panic!("error reading reply: {err:?}"),
+        }
+        if reply.ends_with(b"\n") {
+            break;
+        }
+    }
+    assert!(reply.starts_with(b"{\"Ok\":{\"Version\""), "{reply:?}");
+
+    // A request that never ends, like `cat /dev/zero` into the socket. niri must drop the client
+    // rather than buffer all of it.
+    let chunk = [b'a'; 64 * 1024];
+    let mut sent = 0;
+    let mut dropped = false;
+    for _ in 0..1000 {
+        if sent >= 8 << 20 {
+            break;
+        }
+        match client.write(&chunk) {
+            Ok(n) => sent += n,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+            Err(_) => {
+                dropped = true;
+                break;
+            }
+        }
+        f.state.server.dispatch();
+
+        // Closing with our data still unread shows up as EOF or as a reset.
+        let mut buf = [0; 64];
+        match client.read(&mut buf) {
+            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+            Ok(n @ 1..) => panic!("unexpected {n}-byte reply"),
+            Ok(0) | Err(_) => {
+                dropped = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        dropped,
+        "IPC client still connected after sending {sent} bytes"
+    );
+}
