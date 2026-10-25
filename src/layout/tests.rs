@@ -3851,6 +3851,158 @@ fn workspace_render_geo_at_fractional_scale() {
     );
 }
 
+/// Returns whether render() skips each column of the active workspace, in render order (the
+/// active column first).
+fn culled_columns(layout: &Layout<TestWindow>) -> Vec<bool> {
+    let scrolling = layout.active_workspace().unwrap().scrolling();
+    let visible_x = (0., scrolling.view_size().w);
+    scrolling
+        .columns_with_render_positions()
+        .map(|(col, pos)| col.is_far_outside(pos.x, visible_x))
+        .collect()
+}
+
+/// An active 2000 px wide column on screen, then a column of the given width off screen at
+/// x = 2000. With nothing drawn past its left edge, the second column is culled.
+fn ops_for_column_right_of_screen(width: i32) -> [Op; 8] {
+    [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(2000)),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(width)),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::FocusColumnFirst,
+    ]
+}
+
+#[test]
+fn column_with_tab_indicator_on_screen_is_not_culled() {
+    let mut options = Options::default();
+    options.layout.gaps = 0.;
+    // Tabs twice as long as the column overhang it by half its width on each side.
+    options.layout.tab_indicator.position = TabIndicatorPosition::Top;
+    options.layout.tab_indicator.length = TabIndicatorLength {
+        total_proportion: Some(2.),
+    };
+    // Puts the tabs at the top of the output rather than above it.
+    options.layout.tab_indicator.place_within_column = true;
+
+    let mut layout = check_ops_with_options(options, ops_for_column_right_of_screen(1500));
+    let ops = [
+        Op::FocusColumnRight,
+        Op::ToggleColumnTabbedDisplay,
+        Op::FocusColumnFirst,
+        Op::CompleteAnimations,
+    ];
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(culled_columns(&layout), [false, true]);
+
+    // The second column starts at x = 2000, and its tabs at x = 2000 - 750.
+    layout.update_render_elements(None);
+    let ws = layout.active_workspace().unwrap();
+    let (col, col_pos) = ws
+        .scrolling()
+        .columns_with_render_positions()
+        .nth(1)
+        .unwrap();
+    let tabs_loc = col.tab_indicator().rendered_rects().first().map(|r| r.loc);
+    assert_eq!(col_pos, Point::from((2000., 0.)));
+    assert_eq!(tabs_loc, Some(Point::from((-750., 0.))));
+    assert_eq!(culled_columns(&layout), [false, false]);
+    layout.verify_invariants();
+}
+
+#[test]
+fn column_with_shadow_on_screen_is_not_culled() {
+    let mut options = Options::default();
+    options.layout.gaps = 0.;
+    // The shadow reaches 800 + 1.5 * 30 = 845 px past the window.
+    options.layout.shadow.on = true;
+    options.layout.shadow.spread = 800.;
+    options.layout.shadow.softness = 30.;
+
+    let mut layout = check_ops_with_options(options, ops_for_column_right_of_screen(1000));
+    Op::CompleteAnimations.apply(&mut layout);
+    assert_eq!(culled_columns(&layout), [false, true]);
+
+    // The second column starts at x = 2000, and its shadow at x = 2000 - 845.
+    layout.update_render_elements(None);
+    assert_eq!(culled_columns(&layout), [false, false]);
+    layout.verify_invariants();
+}
+
+#[test]
+fn opening_window_with_shader_reaching_screen_is_not_culled() {
+    let mut options = Options::default();
+    options.layout.gaps = 0.;
+    options.layout.focus_ring.off = true;
+
+    let mut layout = check_ops_with_options(options, ops_for_column_right_of_screen(3000));
+    Op::CompleteAnimations.apply(&mut layout);
+    assert_eq!(culled_columns(&layout), [false, true]);
+
+    // A custom open shader can draw 3000 / 4 = 750 px past the window, so from x = 2000 - 750.
+    layout.start_open_animation_for_window(&2);
+    assert_eq!(culled_columns(&layout), [false, false]);
+    layout.verify_invariants();
+
+    Op::CompleteAnimations.apply(&mut layout);
+    assert_eq!(culled_columns(&layout), [false, true]);
+}
+
+#[test]
+fn active_column_with_focus_ring_on_screen_is_not_culled() {
+    let mut options = Options::default();
+    options.layout.gaps = 0.;
+    options.layout.focus_ring.width = 800.;
+
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::FocusColumnFirst,
+        Op::CompleteAnimations,
+        // Scroll the view right without changing focus.
+        Op::ViewOffsetGestureBegin {
+            output_idx: 1,
+            workspace_idx: None,
+            is_touchpad: false,
+        },
+        Op::ViewOffsetGestureUpdate {
+            delta: 1700.,
+            timestamp: Duration::from_millis(0),
+            is_touchpad: false,
+        },
+    ];
+    let mut layout = check_ops_with_options(options, ops);
+
+    // The active column ends at x = -700, and its focus ring at x = -700 + 800.
+    let ws = layout.active_workspace().unwrap();
+    let (_, col_pos) = ws
+        .scrolling()
+        .columns_with_render_positions()
+        .next()
+        .unwrap();
+    assert_eq!(col_pos, Point::from((-1700., 0.)));
+    assert_eq!(culled_columns(&layout), [false, false]);
+    layout.update_render_elements(None);
+    layout.verify_invariants();
+}
+
 fn parent_id_causes_loop(layout: &Layout<TestWindow>, id: usize, mut parent_id: usize) -> bool {
     if parent_id == id {
         return true;

@@ -31,6 +31,14 @@ niri_render_elements! {
     }
 }
 
+/// How far past each side of the rendered window the custom open shader can draw, given the
+/// window's length along that axis.
+pub fn shader_margin(length: f64) -> f64 {
+    // Expand the area a bit to allow for more varied effects: to 1.5 times the length, and by at
+    // least 1000 px.
+    f64::max(500., length / 4.)
+}
+
 impl OpenAnimation {
     pub fn new(anim: Animation) -> Self {
         Self {
@@ -72,11 +80,7 @@ impl OpenAnimation {
 
             let mut area = Rectangle::new(location + offset, texture_size);
 
-            // Expand the area a bit to allow for more varied effects.
-            let mut target_size = area.size.upscale(1.5);
-            target_size.w = f64::max(area.size.w + 1000., target_size.w);
-            target_size.h = f64::max(area.size.h + 1000., target_size.h);
-            let diff = (target_size.to_point() - area.size.to_point()).downscale(2.);
+            let diff = Point::from((shader_margin(area.size.w), shader_margin(area.size.h)));
             let diff = diff.to_physical_precise_round(scale).to_logical(scale);
             area.loc -= diff;
             area.size += diff.upscale(2.).to_size();

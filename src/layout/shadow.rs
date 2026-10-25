@@ -167,6 +167,15 @@ impl Shadow {
         }
     }
 
+    /// Geometry drawn by `render()`, relative to its `location`.
+    pub fn rendered_rects(&self) -> &[Rectangle<f64, Logical>] {
+        if self.config.on {
+            &self.shader_rects
+        } else {
+            &[]
+        }
+    }
+
     pub fn render(
         &self,
         renderer: &mut impl NiriRenderer,

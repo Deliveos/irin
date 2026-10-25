@@ -9,7 +9,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
-use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
+use super::opening_window::{self, OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
@@ -891,6 +891,32 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         size
+    }
+
+    /// Horizontal extent of what `render()` draws, relative to its `location`, not counting popups
+    /// and subsurfaces outside the window geometry.
+    pub fn render_extent_x(&self) -> (f64, f64) {
+        let w = self.animated_tile_size().w;
+        let mut extent = (0., w);
+        let mut add = |start: f64, end: f64| {
+            extent = (f64::min(extent.0, start), f64::max(extent.1, end));
+        };
+
+        if !self.focus_ring.is_off() {
+            let width = self.focus_ring.width();
+            add(-width, w + width);
+        }
+        for rect in self.shadow.rendered_rects() {
+            add(rect.loc.x, rect.loc.x + rect.size.w);
+        }
+
+        if self.open_animation.is_some() {
+            // A custom open shader can draw past the rendered window.
+            let margin = opening_window::shader_margin(extent.1 - extent.0);
+            extent = (extent.0 - margin, extent.1 + margin);
+        }
+
+        extent
     }
 
     pub fn buf_loc(&self) -> Point<f64, Logical> {
