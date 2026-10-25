@@ -65,8 +65,8 @@ Only report testing you actually did.
 
 Point out everything you find as review comments, and be constructive and respectful.
 If everything looks good, say so.
-Reviews from agents are comments only: agents never approve or merge pull requests, including their own.
-A human maintainer approves and merges once CI is green on the latest commit and no review threads are unresolved.
+Agents never review, approve or merge a pull request with commits they wrote.
+People with write access, and agents that wrote none of a pull request's commits, may approve and merge once CI is green on the latest commit and no review threads are unresolved.
 A pull request whose latest commit has no CI run is not green; CI doesn't start while a pull request has merge conflicts, or on a branch with no pull request.
 
 ## Writing pull requests
