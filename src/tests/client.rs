@@ -10,6 +10,8 @@ use std::time::Duration;
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
 use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
+use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1};
+use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1};
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
@@ -65,9 +67,20 @@ pub struct State {
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub foreign_toplevel_list: Option<ExtForeignToplevelListV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
+    pub foreign_toplevels: Vec<ForeignToplevel>,
+}
+
+/// A toplevel announced through ext-foreign-toplevel-list.
+#[derive(Debug)]
+pub struct ForeignToplevel {
+    pub handle: ExtForeignToplevelHandleV1,
+    pub title: Option<String>,
+    pub app_id: Option<String>,
+    pub closed: bool,
 }
 
 pub struct Window {
@@ -265,8 +278,10 @@ impl Client {
             spbm: None,
             viewporter: None,
             ksim: None,
+            foreign_toplevel_list: None,
             windows: Vec::new(),
             layers: Vec::new(),
+            foreign_toplevels: Vec::new(),
         };
 
         Self {
@@ -655,6 +670,9 @@ impl Dispatch<WlRegistry, ()> for State {
                         ZwpKeyboardShortcutsInhibitManagerV1::interface().version,
                     );
                     state.ksim = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ExtForeignToplevelListV1::interface().name {
+                    let version = min(version, ExtForeignToplevelListV1::interface().version);
+                    state.foreign_toplevel_list = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -1038,6 +1056,62 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
         match event {
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => (),
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => (),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<ExtForeignToplevelListV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &ExtForeignToplevelListV1,
+        event: <ExtForeignToplevelListV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
+                state.foreign_toplevels.push(ForeignToplevel {
+                    handle: toplevel,
+                    title: None,
+                    app_id: None,
+                    closed: false,
+                });
+            }
+            ext_foreign_toplevel_list_v1::Event::Finished => (),
+            _ => unreachable!(),
+        }
+    }
+
+    wayland_client::event_created_child!(State, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        handle: &ExtForeignToplevelHandleV1,
+        event: <ExtForeignToplevelHandleV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let toplevel = state
+            .foreign_toplevels
+            .iter_mut()
+            .find(|t| t.handle == *handle)
+            .unwrap();
+
+        match event {
+            ext_foreign_toplevel_handle_v1::Event::Closed => toplevel.closed = true,
+            ext_foreign_toplevel_handle_v1::Event::Done => (),
+            ext_foreign_toplevel_handle_v1::Event::Title { title } => toplevel.title = Some(title),
+            ext_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                toplevel.app_id = Some(app_id)
+            }
+            ext_foreign_toplevel_handle_v1::Event::Identifier { .. } => (),
             _ => unreachable!(),
         }
     }
