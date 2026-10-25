@@ -180,6 +180,11 @@ impl DisplayConfig {
         let current_conf = self.ipc_outputs.lock().unwrap();
         let mut new_conf = HashMap::new();
         for requested_config in logical_monitor_configs {
+            // The scale goes into the output config as is, and NaN would crash niri later.
+            let scale = requested_config.scale;
+            if !(scale.is_finite() && scale > 0.) {
+                return Err(zbus::fdo::Error::Failed(format!("Invalid scale {scale}")));
+            }
             if requested_config.monitors.len() > 1 {
                 return Err(zbus::fdo::Error::Failed(
                     "Mirroring is not yet supported".to_owned(),
@@ -337,6 +342,39 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+
+    #[test]
+    fn apply_rejects_invalid_scale() {
+        let (to_niri, _from_display_config) = calloop::channel::channel();
+        let display_config = DisplayConfig::new(to_niri, Default::default());
+
+        let apply = |scale| {
+            let config = LogicalMonitorConfiguration {
+                x: 0,
+                y: 0,
+                scale,
+                transform: 0,
+                _is_primary: true,
+                monitors: vec![(
+                    String::from("DP-1"),
+                    String::from("1920x1080@60.000"),
+                    HashMap::new(),
+                )],
+            };
+            async_io::block_on(display_config.apply_monitors_config(
+                0,
+                1,
+                vec![config],
+                HashMap::new(),
+            ))
+        };
+
+        // There are no outputs, so a scale that got past the check would fail on the connector.
+        for scale in [f64::NAN, f64::INFINITY, 0., -1.] {
+            let err = apply(scale).unwrap_err();
+            assert!(err.to_string().contains("Invalid scale"), "{scale}: {err}");
+        }
+    }
 
     #[test]
     fn test_format_diagonal() {
