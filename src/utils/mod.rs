@@ -334,6 +334,23 @@ pub fn create_new_numbered(path: &Path) -> std::io::Result<(File, PathBuf)> {
     unreachable!()
 }
 
+/// Writes a new file with `write`, then renames it to `path`, replacing the file there.
+///
+/// Readers of `path` get the old file or the new one, never a partly written one.
+pub fn write_atomically(
+    path: &Path,
+    write: impl FnOnce(File) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let (file, tmp) = create_new_numbered(Path::new(&tmp)).context("error creating file")?;
+    let res = write(file).and_then(|()| std::fs::rename(&tmp, path).context("error renaming file"));
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
 pub fn write_png_rgba8(
     w: impl Write,
     width: u32,
@@ -645,6 +662,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(names, ["shot.png", "shot (2).png", "shot (3).png"]);
+    }
+
+    #[test]
+    fn write_atomically_replaces_only_when_done() {
+        let dir = std::env::temp_dir().join(format!("niri-test-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        std::fs::write(&path, "old").unwrap();
+
+        let mut while_writing = None;
+        let res = write_atomically(&path, |mut file| {
+            file.write_all(b"new")?;
+            while_writing = Some(std::fs::read(&path)?);
+            Ok(())
+        });
+        let after = std::fs::read(&path).unwrap();
+        let failed = write_atomically(&path, |_| anyhow::bail!("disk full"));
+        let files = std::fs::read_dir(&dir).unwrap().count();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        res.unwrap();
+        assert_eq!(while_writing.as_deref(), Some(&b"old"[..]));
+        assert_eq!(after, b"new");
+        assert!(failed.is_err());
+        assert_eq!(files, 1, "a temporary file was left behind");
     }
 
     #[test]
