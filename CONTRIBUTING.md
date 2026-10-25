@@ -66,6 +66,7 @@ Only report testing you actually did.
 Point out everything you find as review comments, and be constructive and respectful.
 If everything looks good, say so.
 People and agents with write access may approve and merge once CI is green on the latest commit and no review threads are unresolved.
+A pull request whose latest commit has no CI run is not green; CI doesn't start while a pull request has merge conflicts.
 
 ## Writing pull requests
 
@@ -79,7 +80,7 @@ People and agents with write access may approve and merge once CI is green on th
     - Update from `main` by rebasing, not merging.
     - [git-rebase.io](https://git-rebase.io/) is a helpful guide for splitting commits and cleaning up history.
 - Mark review comments as resolved once you address them.
-- Run `cargo +nightly fmt --all`, `cargo clippy --all --all-targets` and `cargo test --all --exclude niri-visual-tests` (see Tests in `docs/wiki/Development:-Developing-niri.md`). CI runs the rest.
+- Run `cargo +nightly fmt --all`, `cargo clippy --all --all-targets` and `cargo test --all --exclude niri-visual-tests` (see Tests in `docs/wiki/Development:-Developing-niri.md`). CI runs the rest, except the docs build: if you change anything under `docs/`, run `uv run mkdocs build` there (see `AGENTS.md`).
 - For new layout operations, add them to the randomized tests (`Op` in `src/layout/tests.rs`). For weird Wayland handling, client-server tests in `src/tests/` are very useful. Crash fixes come with a regression test where possible.
 - Document new config options in `docs/wiki/` and add them to the config parsing test.
 - Fill in the pull request template, including how you tested the change.

@@ -70,6 +70,7 @@ docs/wiki/             user and developer documentation
 - **Other people's branches:** never rewrite them; only add commits, and only when the author asked.
 - **You may:** read any code, create branches, commit and push to your own branches, open pull requests, mark them ready for review, answer review comments, fix CI on your pull requests, and open issues.
 - **Approving and merging:** an agent with write access may approve and merge pull requests, including its own, once CI is green on the latest commit and no review threads are unresolved.
+    A pull request whose latest commit has no CI run is not green.
 - **You may not:** push to `main` (everything goes through a pull request), or close other people's issues or pull requests.
 - **Accountability:** the person who runs the agent (or the pull request author) is responsible for the pull request.
     They must understand the change and be able to answer review on it.
@@ -84,7 +85,12 @@ cargo clippy --all --all-targets
 cargo test --all --exclude niri-visual-tests
 ```
 
-CI runs the rest (feature combinations, MSRV, slow randomized tests, musl, FreeBSD, Nix, docs); get it green before asking for review.
+CI runs the rest (feature combinations, MSRV, slow randomized tests, musl, FreeBSD, Nix) on your pull request; get it green before asking for review.
+CI doesn't start while the pull request has merge conflicts, so rebase onto `main` first.
+A push to a branch without a pull request doesn't start CI either; open a draft pull request, or run the `CI` workflow on the branch by hand.
+The `nix` job never fails the run (its steps have `continue-on-error`), so if you change Nix files, read its log.
+The docs jobs run only in upstream niri, so the CI parts of `docs/wiki/Development:-Documenting-niri.md` don't apply here.
+If you change anything under `docs/`, run `uv sync --locked` and `uv run mkdocs build` in `docs/` yourself; the build fails on broken links or anchors and on pages missing from `nav`.
 
 - For crash and freeze fixes, add a regression test where possible (see `src/tests/crash_regressions.rs`).
 - New layout operations go into `Op` in `src/layout/tests.rs` (and the `every_op` arrays where applicable), so the randomized tests cover them.

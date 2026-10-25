@@ -2,10 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
     - cron: '0 0 1 * *' # Monthly
+
+# A new commit in a pull request cancels the run for its previous commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   DEPS_APT: curl gcc clang libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libpipewire-0.3-dev libpango1.0-dev libdisplay-info-dev
