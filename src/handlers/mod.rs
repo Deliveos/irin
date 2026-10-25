@@ -238,6 +238,10 @@ impl InputMethodHandler for State {
 
         self.unconstrain_popup(&popup);
 
+        // When focus moves, smithay moves the already mapped popup to the new window without a
+        // commit, so nothing else would make that window send wl_surface.enter to it.
+        self.queue_popup_output_refresh(&popup);
+
         if let Err(err) = self.niri.popups.track_popup(popup) {
             warn!("error tracking ime popup {err:?}");
         }
