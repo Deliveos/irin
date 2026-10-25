@@ -7,6 +7,7 @@ mod test_input_backend;
 
 mod animations;
 mod binds;
+mod configure_state;
 mod crash_regressions;
 mod floating;
 mod foreign_toplevel;

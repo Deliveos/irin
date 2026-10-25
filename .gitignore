@@ -2,3 +2,7 @@
 /result
 
 .idea
+
+# insta scratch files
+*.pending-snap
+*.snap.new
