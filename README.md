@@ -103,7 +103,7 @@ The talk is in Russian, but I prepared full English subtitles that you can find 
 ## Contributing
 
 If you'd like to help with niri, there are plenty of both coding- and non-coding-related ways to do so.
-See [CONTRIBUTING.md](https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md) for an overview.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for an overview.
 
 ## Inspiration
 
