@@ -131,8 +131,10 @@ struct CastInner {
     /// stored in order from oldest to newest, and the same ordering should be preserved when
     /// submitting completed buffers to PipeWire.
     rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint)>,
-    /// Whether the last frame was skipped for lack of a free buffer, to warn once per stall.
-    stalled: bool,
+    /// When we last warned about frames skipped for lack of a free buffer.
+    last_no_buffer_warning: Option<Duration>,
+    /// Frames skipped for lack of a free buffer during this cast.
+    skipped_frames: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -465,7 +467,8 @@ impl PipeWire {
             dmabufs: HashMap::new(),
             shmbufs: HashMap::new(),
             rendering_buffers: Vec::new(),
-            stalled: false,
+            last_no_buffer_warning: None,
+            skipped_frames: 0,
         }));
 
         let listener =
@@ -1291,7 +1294,10 @@ impl Cast {
             } = &mut inner.state
             {
                 *damage_tracker = None;
-                *cursor_damage_tracker = None;
+                // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
+                if redraw_cursor {
+                    *cursor_damage_tracker = None;
+                }
                 *last_cursor_location = None;
             }
             inner.note_no_buffer();
@@ -1300,7 +1306,6 @@ impl Cast {
         let buffer = pw_buffer.as_ptr();
 
         let mut inner = self.inner.borrow_mut();
-        inner.stalled = false;
         let inner_ = &mut *inner;
         let CastState::Ready {
             damage_tracker,
@@ -1384,7 +1389,6 @@ impl Cast {
             self.inner.borrow_mut().note_no_buffer();
             return false;
         };
-        self.inner.borrow_mut().stalled = false;
         let buffer = pw_buffer.as_ptr();
 
         unsafe {
@@ -1430,11 +1434,22 @@ impl Cast {
 }
 
 impl CastInner {
-    /// Logs a skipped frame; once per stall, since a stalled consumer would hit it every frame.
+    /// Logs a skipped frame, warning at most once per `WARNING_INTERVAL`, since a slow consumer
+    /// can hit this on every other frame.
     fn note_no_buffer(&mut self) {
-        if !self.stalled {
-            self.stalled = true;
-            warn!("no available buffer in pw stream, skipping frames until one is free");
+        const WARNING_INTERVAL: Duration = Duration::from_secs(10);
+
+        self.skipped_frames += 1;
+        let now = get_monotonic_time();
+        if self
+            .last_no_buffer_warning
+            .is_none_or(|last| now.saturating_sub(last) >= WARNING_INTERVAL)
+        {
+            warn!(
+                "no available buffer in pw stream, skipping frame ({} skipped so far)",
+                self.skipped_frames
+            );
+            self.last_no_buffer_warning = Some(now);
         } else {
             trace!("no available buffer in pw stream, skipping frame");
         }
