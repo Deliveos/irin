@@ -113,3 +113,58 @@ fn cursor_wider_than_output_redraws_on_motion() {
     move_pointer(niri, pos - Point::from((1., 1.)));
     assert!(refresh(niri, &outputs)[1]);
 }
+
+#[test]
+fn ending_spatial_movement_grab_redraws_cursor_output() {
+    use smithay::backend::input::InputTime;
+    use smithay::input::pointer::{CursorIcon, CursorImageStatus, Focus, GrabStartData};
+    use smithay::utils::SERIAL_COUNTER;
+
+    use crate::input::spatial_movement_grab::SpatialMovementGrab;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    f.add_output(2, (1920, 1080));
+    let output1 = f.niri_output(1);
+    let output2 = f.niri_output(2);
+    let outputs = [&output1, &output2];
+
+    // The cursor is on output 2.
+    let niri = f.niri();
+    let geo2 = niri
+        .global_space
+        .output_geometry(&output2)
+        .unwrap()
+        .to_f64();
+    let center2 = geo2.loc + geo2.size.downscale(2.).to_point();
+    move_pointer(niri, center2);
+    refresh(niri, &outputs);
+
+    // A gesture on output 1 shows the AllScroll cursor.
+    let ws_id = niri
+        .layout
+        .monitor_for_output(&output1)
+        .unwrap()
+        .active_workspace_ref()
+        .id();
+    let start_data = GrabStartData {
+        focus: None,
+        button: 0x112,
+        location: center2,
+    };
+    let grab = SpatialMovementGrab::new(start_data, output1.clone(), ws_id, false);
+    let state = f.niri_state();
+    let pointer = state.niri.seat.get_pointer().unwrap();
+    pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+    state
+        .niri
+        .cursor_manager
+        .set_cursor_image(CursorImageStatus::Named(CursorIcon::AllScroll));
+
+    // Ending it resets the cursor, which must be redrawn on output 2.
+    for state in state.niri.output_state.values_mut() {
+        state.redraw_state = RedrawState::Idle;
+    }
+    pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), InputTime::now());
+    assert_eq!(queued(&state.niri, &outputs), [false, true]);
+}

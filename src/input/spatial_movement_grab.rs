@@ -141,6 +141,8 @@ impl SpatialMovementGrab {
             .niri
             .cursor_manager
             .set_cursor_image(CursorImageStatus::default_named());
+        // The cursor can be on another output than the gesture.
+        state.niri.queue_redraw_cursor_outputs();
     }
 }
 
