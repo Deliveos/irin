@@ -2386,6 +2386,31 @@ impl State {
     pub fn set_dynamic_cast_target(&mut self, _target: CastTarget) {}
 
     #[cfg(feature = "dbus")]
+    pub fn on_display_config_msg(
+        &mut self,
+        new_conf: HashMap<String, Option<niri_config::Output>>,
+    ) {
+        for (name, conf) in new_conf {
+            self.modify_output_config(&name, move |output| {
+                let Some(new) = conf else {
+                    output.off = true;
+                    return;
+                };
+                // Change only what DisplayConfig sets: the entry may be named by make, model and
+                // serial, and has settings that DisplayConfig doesn't know.
+                output.off = false;
+                output.scale = new.scale;
+                output.transform = new.transform;
+                output.position = new.position;
+                output.mode = new.mode;
+                // A modeline takes precedence over the mode.
+                output.modeline = None;
+            });
+        }
+        self.reload_output_config();
+    }
+
+    #[cfg(feature = "dbus")]
     pub fn on_screen_shot_msg(&mut self, msg: ScreenshotToNiri) {
         match msg {
             ScreenshotToNiri::TakeScreenshot {
