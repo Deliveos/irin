@@ -345,7 +345,9 @@ pub fn write_png_rgba8(
     encoder.set_depth(png::BitDepth::Eight);
 
     let mut writer = encoder.write_header()?;
-    writer.write_image_data(pixels)
+    writer.write_image_data(pixels)?;
+    // Dropping the writer would also write the end and flush, but ignore the errors.
+    writer.finish()
 }
 
 pub fn output_matches_name(output: &Output, target: &str) -> bool {
@@ -631,6 +633,22 @@ pub fn cause_panic() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_png_rgba8_reports_failed_flush() {
+        // Like a BufWriter on a full disk: the last bytes only go out on flush.
+        struct FlushFails;
+        impl Write for FlushFails {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::StorageFull.into())
+            }
+        }
+
+        assert!(write_png_rgba8(FlushFails, 1, 1, &[0; 4]).is_err());
+    }
 
     #[test]
     fn create_new_numbered_never_overwrites() {
