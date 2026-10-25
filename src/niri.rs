@@ -862,10 +862,6 @@ impl State {
         self.refresh_popup_grab();
         self.update_keyboard_focus();
 
-        // Should be called before refresh_layout() because that one will refresh other window
-        // states and then send a pending configure.
-        self.niri.refresh_window_states();
-
         // Needs to be called after updating the keyboard focus.
         self.niri.refresh_layout();
 
@@ -1897,6 +1893,9 @@ impl State {
         if reload_xkb {
             self.load_configured_keymap();
         }
+
+        // prefer-no-csd feeds into the tiled state, which isn't polled.
+        self.niri.refresh_window_states();
 
         // The key mapping follows the config, so the logind inhibitor must too, otherwise logind
         // also acts on the power key (by default powering off).
@@ -4320,6 +4319,10 @@ impl Niri {
         self.idle_notifier_state.set_is_inhibited(is_inhibited);
     }
 
+    /// Recomputes the tiled state of all windows, e.g. after prefer-no-csd changed.
+    ///
+    /// Inputs of the tiled state change rarely, so this isn't polled: decoration handlers and
+    /// window rule changes update single windows.
     pub fn refresh_window_states(&mut self) {
         let _span = tracy_client::span!("Niri::refresh_window_states");
 
@@ -4328,6 +4331,20 @@ impl Niri {
             mapped.update_tiled_state(config.prefer_no_csd);
         });
         drop(config);
+    }
+
+    /// Recomputes the tiled state of the window with this surface, if any.
+    pub fn update_tiled_state(&self, surface: &WlSurface) {
+        let prefer_no_csd = self.config.borrow().prefer_no_csd;
+        if let Some((mapped, _)) = self.layout.find_window_and_output(surface) {
+            mapped.update_tiled_state(prefer_no_csd);
+        } else if let Some(unmapped) = self.unmapped_windows.get(surface) {
+            // Before the initial configure, it computes the tiled state itself.
+            if let InitialConfigureState::Configured { rules, .. } = &unmapped.state {
+                let toplevel = unmapped.window.toplevel().expect("no X11 support");
+                crate::utils::update_tiled_state(toplevel, prefer_no_csd, rules.tiled_state);
+            }
+        }
     }
 
     pub fn refresh_window_rules(&mut self) {
