@@ -36,7 +36,9 @@ pub struct ClosingWindow {
     buffer_with_blocked_out_bg: Option<TextureBuffer<GlesTexture>>,
 
     /// Blocked-out contents of the window.
-    blocked_out_buffer: TextureBuffer<GlesTexture>,
+    ///
+    /// Only rendered when `block_out_from` is set, since only then is it ever shown.
+    blocked_out_buffer: Option<TextureBuffer<GlesTexture>>,
 
     /// Where the window should be blocked out from.
     block_out_from: Option<BlockOutFrom>,
@@ -138,9 +140,13 @@ impl ClosingWindow {
             } else {
                 (None, Point::default())
             };
-        let (blocked_out_buffer, blocked_out_buffer_offset) =
-            render_to_texture(snapshot.blocked_out_contents)
+        let (blocked_out_buffer, blocked_out_buffer_offset) = if snapshot.block_out_from.is_some() {
+            let (buffer, offset) = render_to_texture(snapshot.blocked_out_contents)
                 .context("error rendering blocked-out contents")?;
+            (Some(buffer), offset)
+        } else {
+            (None, Point::default())
+        };
 
         Ok(Self {
             buffer,
@@ -182,13 +188,18 @@ impl ClosingWindow {
         view_rect: Rectangle<f64, Logical>,
         scale: Scale<f64>,
     ) -> ClosingWindowRenderElement {
-        let (buffer, offset) = if ctx.target.should_block_out(self.block_out_from) {
-            (&self.blocked_out_buffer, self.blocked_out_buffer_offset)
-        } else if ctx.target != RenderTarget::Output && self.buffer_with_blocked_out_bg.is_some() {
-            (
-                self.buffer_with_blocked_out_bg.as_ref().unwrap(),
-                self.buffer_with_blocked_out_bg_offset,
-            )
+        let blocked_out = self
+            .blocked_out_buffer
+            .as_ref()
+            .filter(|_| ctx.target.should_block_out(self.block_out_from));
+        let (buffer, offset) = if let Some(blocked_out) = blocked_out {
+            (blocked_out, self.blocked_out_buffer_offset)
+        } else if let Some(with_blocked_out_bg) = self
+            .buffer_with_blocked_out_bg
+            .as_ref()
+            .filter(|_| ctx.target != RenderTarget::Output)
+        {
+            (with_blocked_out_bg, self.buffer_with_blocked_out_bg_offset)
         } else {
             (&self.buffer, self.buffer_offset)
         };
