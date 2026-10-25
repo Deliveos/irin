@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -214,11 +213,10 @@ fn refresh_toplevel(
 ) {
     let states = to_state_vec(&current.states, has_focus);
 
-    match protocol_state.toplevels.entry(wl_surface.clone()) {
-        Entry::Occupied(entry) => {
+    // Look up without cloning the key: this runs for every window on every iteration.
+    match protocol_state.toplevels.get_mut(wl_surface) {
+        Some(data) => {
             // Existing window, check if anything changed.
-            let data = entry.into_mut();
-
             let mut new_title = None;
             if data.title != role.title {
                 data.title.clone_from(&role.title);
@@ -300,7 +298,7 @@ fn refresh_toplevel(
                 outputs.retain(|x| x.is_alive());
             }
         }
-        Entry::Vacant(entry) => {
+        None => {
             // New window, start tracking it.
             let mut data = ToplevelData {
                 identifier,
@@ -325,7 +323,7 @@ fn refresh_toplevel(
                 }
             }
 
-            entry.insert(data);
+            protocol_state.toplevels.insert(wl_surface.clone(), data);
         }
     }
 }
