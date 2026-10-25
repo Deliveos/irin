@@ -871,7 +871,6 @@ impl State {
 
         self.niri.cursor_manager.check_cursor_image_surface_alive();
         self.niri.refresh_pointer_outputs();
-        self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
         // After refresh_pointer_contents(), which can change the cursor image and visibility.
@@ -2719,6 +2718,9 @@ impl Niri {
                 |_, _, state| {
                     state.niri.send_frame_callbacks_on_fallback_timer();
                     state.niri.release_idle_effect_buffers();
+                    // global_space has no windows, so this only drops dead surfaces from the
+                    // outputs' enter/leave sets, which doesn't need to happen every iteration.
+                    state.niri.global_space.refresh();
                     TimeoutAction::ToDuration(Duration::from_secs(1))
                 },
             )
