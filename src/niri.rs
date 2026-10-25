@@ -193,7 +193,8 @@ use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
     center, center_f64, create_new_numbered, expand_home, get_monotonic_time,
     ipc_transform_to_smithay, is_mapped, logical_output, make_screenshot_path, output_matches_name,
-    output_size, panel_orientation, send_scale_transform, winit_scale, write_png_rgba8, xwayland,
+    output_size, panel_orientation, send_scale_transform, winit_scale, write_atomically,
+    write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -6743,6 +6744,12 @@ impl Niri {
         debug!("saving screenshot to {path:?}");
 
         thread::spawn(move || {
+            let write = |file: std::fs::File| {
+                let w = std::io::BufWriter::new(file);
+                write_png_rgba8(w, geo.size.w as u32, geo.size.h as u32, &pixels)
+                    .context("error encoding screenshot image")
+            };
+
             let res = match path {
                 Some(path) => {
                     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -6751,6 +6758,8 @@ impl Niri {
                         }
                     }
                     create_new_numbered(&path)
+                        .context("error creating file")
+                        .and_then(|(file, path)| write(file).map(|()| path))
                 }
                 None => {
                     // Not /tmp: that is readable by other users.
@@ -6758,24 +6767,16 @@ impl Niri {
                         .and_then(|d| d.runtime_dir().map(|d| d.to_owned()))
                         .unwrap_or_else(env::temp_dir);
                     path.push("screenshot.png");
-                    std::fs::File::create(&path).map(|file| (file, path))
-                }
-            };
-            let (file, path) = match res {
-                Ok(x) => x,
-                Err(err) => {
-                    warn!("error creating file: {err:?}");
-                    return;
+                    // Every such screenshot reuses this path, so don't write into the file that
+                    // another screenshot is writing, or that its caller is reading.
+                    write_atomically(&path, write).map(|()| path)
                 }
             };
 
-            let w = std::io::BufWriter::new(file);
-            if let Err(err) = write_png_rgba8(w, geo.size.w as u32, geo.size.h as u32, &pixels) {
-                warn!("error encoding screenshot image: {err:?}");
-                return;
+            match res {
+                Ok(path) => on_done(path),
+                Err(err) => warn!("error saving screenshot: {err:?}"),
             }
-
-            on_done(path);
         });
 
         Ok(())
