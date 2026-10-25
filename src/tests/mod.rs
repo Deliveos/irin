@@ -15,6 +15,7 @@ mod ipc;
 mod layer_shell;
 mod pointer_redraws;
 mod remove_output;
+mod screenshot;
 mod tiled_state;
 mod transactions;
 mod virtual_pointer;

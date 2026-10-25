@@ -97,6 +97,7 @@ pub struct OutputData {
     panel: Option<(TextureBuffer<GlesTexture>, TextureBuffer<GlesTexture>)>,
 }
 
+#[derive(Clone)]
 pub struct OutputScreenshot {
     texture: GlesTexture,
     buffer: PrimaryGpuTextureRenderElement,
@@ -1020,6 +1021,11 @@ impl ScreenshotUi {
 }
 
 impl OutputScreenshot {
+    #[cfg(test)]
+    pub fn texture(&self) -> &GlesTexture {
+        &self.texture
+    }
+
     pub fn from_textures(
         renderer: &mut GlesRenderer,
         scale: Scale<f64>,

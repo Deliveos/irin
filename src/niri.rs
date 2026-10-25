@@ -6328,6 +6328,16 @@ impl Niri {
         self.queue_redraw_all();
     }
 
+    /// Whether rendering for different `RenderTarget`s can give different results.
+    ///
+    /// Only block-out-from rules make them differ.
+    fn render_targets_can_differ(&self) -> bool {
+        let config = self.config.borrow();
+        let window_rules = config.window_rules.iter().map(|r| r.block_out_from);
+        let layer_rules = config.layer_rules.iter().map(|r| r.block_out_from);
+        window_rules.chain(layer_rules).any(|b| b.is_some())
+    }
+
     pub fn capture_screenshots<'a>(
         &'a self,
         renderer: &'a mut GlesRenderer,
@@ -6343,7 +6353,7 @@ impl Niri {
                 RenderTarget::Screencast,
                 RenderTarget::ScreenCapture,
             ];
-            let screenshot = targets.map(|target| {
+            let mut render = |target| {
                 let ctx = RenderCtx {
                     renderer,
                     target,
@@ -6398,13 +6408,19 @@ impl Niri {
                         res_pointer.map(|(texture, _, geo)| (texture, geo)),
                     )
                 })
-            });
+            };
 
-            if screenshot.iter().any(|res| res.is_none()) {
-                return None;
-            }
-
-            let screenshot = screenshot.map(|res| res.unwrap());
+            let screenshot = if self.render_targets_can_differ() {
+                let screenshot = targets.map(&mut render);
+                if screenshot.iter().any(|res| res.is_none()) {
+                    return None;
+                }
+                screenshot.map(|res| res.unwrap())
+            } else {
+                // Every target would render the same, so share one full-output texture.
+                let screenshot = render(RenderTarget::Output)?;
+                [screenshot.clone(), screenshot.clone(), screenshot]
+            };
             Some((output, screenshot))
         })
     }
@@ -7196,6 +7212,7 @@ impl Niri {
 
         self.update_render_elements(None);
 
+        let targets_can_differ = self.render_targets_can_differ();
         let textures: Vec<_> = self
             .output_state
             .keys()
@@ -7210,7 +7227,7 @@ impl Niri {
                     RenderTarget::Screencast,
                     RenderTarget::ScreenCapture,
                 ];
-                let textures = targets.map(|target| {
+                let mut render = |target| {
                     let ctx = RenderCtx {
                         renderer,
                         target,
@@ -7232,23 +7249,27 @@ impl Niri {
                         warn!("error rendering output {}: {err:?}", output.name());
                     }
 
-                    res
-                });
-
-                if textures.iter().any(|res| res.is_err()) {
-                    return None;
-                }
-
-                let textures = textures.map(|res| {
-                    let texture = res.unwrap().0;
-                    TextureBuffer::from_texture(
+                    let (texture, _) = res.ok()?;
+                    Some(TextureBuffer::from_texture(
                         renderer,
                         texture,
                         scale,
                         transform,
                         Vec::new(), // We want windows below to get frame callbacks.
-                    )
-                });
+                    ))
+                };
+
+                let textures = if targets_can_differ {
+                    let textures = targets.map(&mut render);
+                    if textures.iter().any(|res| res.is_none()) {
+                        return None;
+                    }
+                    textures.map(|res| res.unwrap())
+                } else {
+                    // Every target would render the same, so share one full-output texture.
+                    let texture = render(RenderTarget::Output)?;
+                    [texture.clone(), texture.clone(), texture]
+                };
 
                 Some((output, textures))
             })
