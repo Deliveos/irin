@@ -1097,3 +1097,106 @@ fn width_resize_and_cancel_of_column_to_the_left() {
     200 × 200 at x:100 y:  0
     ");
 }
+
+#[test]
+fn shrinking_column_left_of_active_is_not_culled() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1200)),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::CompleteAnimations,
+    ];
+    let mut layout = check_ops_with_options(make_options(), ops);
+
+    // The right 100 px of the first column are on screen.
+    assert_snapshot!(format_tiles(&layout), @r"
+    1200 × 720 at x:-1100 y:  0
+    1000 × 720 at x:100 y:  0
+    ");
+
+    let ops = [
+        Op::SetWindowWidth {
+            id: Some(1),
+            change: SizeChange::SetFixed(100),
+        },
+        Op::Communicate(1),
+    ];
+    // verify_invariants() checks that columns with tiles on screen aren't culled. The first
+    // column already has its new 100 px width, but its tile is still drawn at the old position
+    // and size.
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @r"
+    1200 × 720 at x:-1100 y:  0
+    1000 × 720 at x:100 y:  0
+    ");
+
+    Op::AdvanceAnimations { msec_delta: 500 }.apply(&mut layout);
+    layout.verify_invariants();
+    assert_snapshot!(format_tiles(&layout), @r"
+    650 × 720 at x:-550 y:  0
+    1000 × 720 at x:100 y:  0
+    ");
+}
+
+#[test]
+fn column_receiving_window_from_the_left_is_not_culled() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(1000)),
+        Op::Communicate(1),
+        Op::Communicate(2),
+        Op::Communicate(3),
+        Op::FocusColumnFirst,
+        Op::CompleteAnimations,
+    ];
+    let mut layout = check_ops_with_options(make_options(), ops);
+
+    // The left 280 px of the second column are on screen.
+    assert_snapshot!(format_tiles(&layout), @r"
+    1000 × 720 at x:  0 y:  0
+    1000 × 720 at x:1000 y:  0
+    1000 × 720 at x:2000 y:  0
+    ");
+
+    let ops = [
+        Op::ConsumeOrExpelWindowRight { id: Some(2) },
+        Op::Communicate(2),
+        Op::Communicate(3),
+    ];
+    // verify_invariants() checks that columns with tiles on screen aren't culled. The third
+    // column, now holding window 2, is still drawn at its old position off screen, while window 2
+    // is drawn at its old position on screen.
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @r"
+    1000 × 720 at x:  0 y:  0
+    1000 × 720 at x:1000 y:  0
+    1000 × 720 at x:2000 y:  0
+    ");
+
+    Op::AdvanceAnimations { msec_delta: 500 }.apply(&mut layout);
+    layout.verify_invariants();
+    assert_snapshot!(format_tiles(&layout), @r"
+    1000 × 720 at x:  0 y:  0
+    1000 × 540 at x:1000 y:180
+    1000 × 540 at x:1500 y:  0
+    ");
+}

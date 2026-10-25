@@ -2966,12 +2966,18 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         Some(col.tiles[col.active_tile_idx].window())
     }
 
+    /// Renders the columns.
+    ///
+    /// `visible_x` is the horizontal range shown on the output, in logical workspace-local
+    /// coordinates (the same as `columns_with_render_positions()`); columns far outside it are
+    /// skipped. `None` renders all columns.
     pub fn render<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        visible_x: Option<(f64, f64)>,
         push: &mut dyn FnMut(ScrollingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
@@ -2995,6 +3001,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         for (col, col_pos) in self.columns_with_render_positions() {
             // Skip columns belonging to a different render layer.
             if layer.is_normal() == col.is_moving_between_workspaces() {
+                first = false;
+                continue;
+            }
+
+            // Skip columns far off-screen.
+            if visible_x.is_some_and(|visible_x| col.is_far_outside(col_pos.x, visible_x)) {
+                for tile in &col.tiles {
+                    tile.window().set_offscreen_data(None);
+                }
                 first = false;
                 continue;
             }
@@ -3832,6 +3847,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let mut data2 = *data;
                 data2.update(column);
                 assert_eq!(data, &data2, "column data must be up to date");
+            }
+
+            // A column with a tile or a tab drawn on screen must not be culled in render().
+            let visible_x = (0., self.view_size.w);
+            let is_on_screen = |start: f64, end: f64| visible_x.0 < end && start < visible_x.1;
+            let mut tiles = self.tiles_with_render_positions();
+            for (col, col_pos) in self.columns_with_render_positions() {
+                let is_culled = col.is_far_outside(col_pos.x, visible_x);
+                for (tile, pos, _) in tiles.by_ref().take(col.tiles.len()) {
+                    let (start, end) = tile.render_extent_x();
+                    assert!(
+                        !(is_culled && is_on_screen(pos.x + start, pos.x + end)),
+                        "a culled column must not have tiles on screen"
+                    );
+                }
+                for rect in col.tab_indicator.rendered_rects() {
+                    let start = col_pos.x + rect.loc.x;
+                    assert!(
+                        !(is_culled && is_on_screen(start, start + rect.size.w)),
+                        "a culled column must not have tabs on screen"
+                    );
+                }
             }
 
             let col = &self.columns[self.active_column_idx];
@@ -4880,6 +4917,40 @@ impl<W: LayoutElement> Column<W> {
         tiles_width
     }
 
+    /// Horizontal extent of what `render()` draws for the column, relative to its render
+    /// position, not counting popups and subsurfaces outside the window geometry.
+    ///
+    /// Unlike `width()`, this follows tile move and resize animations: a tile can be drawn at its
+    /// old position and size while the column already has the new ones.
+    fn render_extent_x(&self) -> (f64, f64) {
+        let mut extent = (0., self.width());
+        for (tile, tile_off) in self.tiles() {
+            let x = tile_off.x + tile.render_offset().x;
+            let (start, end) = tile.render_extent_x();
+            extent.0 = f64::min(extent.0, x + start);
+            extent.1 = f64::max(extent.1, x + end);
+        }
+        // The tab indicator can be longer than the column, or placed far from it.
+        for rect in self.tab_indicator.rendered_rects() {
+            extent.0 = f64::min(extent.0, rect.loc.x);
+            extent.1 = f64::max(extent.1, rect.loc.x + rect.size.w);
+        }
+        extent
+    }
+
+    /// Returns whether the column rendered at `x` is far enough outside `visible_x` to skip it.
+    ///
+    /// The padding of half the visible width covers popups and subsurfaces. Popups are placed
+    /// within the window width when they fit, except input method popups, which can use the whole
+    /// working area. A popup or subsurface reaching further past an off-screen window is skipped
+    /// with it.
+    pub(super) fn is_far_outside(&self, x: f64, visible_x: (f64, f64)) -> bool {
+        let (lo, hi) = visible_x;
+        let pad = (hi - lo) / 2.;
+        let (start, end) = self.render_extent_x();
+        x + end + pad < lo || hi < x + start - pad
+    }
+
     fn focus_index(&mut self, index: u8) {
         let idx = min(usize::from(index.saturating_sub(1)), self.tiles.len() - 1);
         self.activate_idx(idx);
@@ -5503,6 +5574,11 @@ impl<W: LayoutElement> Column<W> {
         }
 
         false
+    }
+
+    #[cfg(test)]
+    pub fn tab_indicator(&self) -> &TabIndicator {
+        &self.tab_indicator
     }
 
     #[cfg(test)]

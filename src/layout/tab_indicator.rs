@@ -16,7 +16,7 @@ use crate::utils::{
 
 #[derive(Debug)]
 pub struct TabIndicator {
-    shader_locs: Vec<Point<f64, Logical>>,
+    shader_rects: Vec<Rectangle<f64, Logical>>,
     shaders: Vec<BorderRenderElement>,
     open_anim: Option<Animation>,
     config: niri_config::TabIndicator,
@@ -39,7 +39,7 @@ niri_render_elements! {
 impl TabIndicator {
     pub fn new(config: niri_config::TabIndicator) -> Self {
         Self {
-            shader_locs: Vec::new(),
+            shader_rects: Vec::new(),
             shaders: Vec::new(),
             open_anim: None,
             config,
@@ -169,20 +169,20 @@ impl TabIndicator {
         scale: f64,
     ) {
         if !enabled || self.config.off {
-            self.shader_locs.clear();
+            self.shader_rects.clear();
             self.shaders.clear();
             return;
         }
 
         let count = tab_count;
         if self.config.hide_when_single_tab && count == 1 {
-            self.shader_locs.clear();
+            self.shader_rects.clear();
             self.shaders.clear();
             return;
         }
 
         self.shaders.resize_with(count, Default::default);
-        self.shader_locs.resize_with(count, Default::default);
+        self.shader_rects.resize_with(count, Default::default);
 
         let position = self.config.position;
         let radius = self.config.corner_radius as f32;
@@ -190,17 +190,17 @@ impl TabIndicator {
         let mut tabs_left = tab_count;
 
         let rects = self.tab_rects(area, count, scale);
-        for ((shader, loc), (tab, rect)) in zip(
-            zip(&mut self.shaders, &mut self.shader_locs),
+        for ((shader, shader_rect), (tab, rect)) in zip(
+            zip(&mut self.shaders, &mut self.shader_rects),
             zip(tabs, rects),
         ) {
-            *loc = rect.loc;
+            *shader_rect = rect;
 
             let mut gradient_area = match tab.gradient.relative_to {
                 GradientRelativeTo::Window => tab.geometry,
                 GradientRelativeTo::WorkspaceView => area_view_rect,
             };
-            gradient_area.loc -= *loc;
+            gradient_area.loc -= rect.loc;
 
             let mut color_from = tab.gradient.from;
             let mut color_to = tab.gradient.to;
@@ -301,10 +301,15 @@ impl TabIndicator {
             return;
         }
 
-        for (shader, loc) in zip(&self.shaders, &self.shader_locs) {
-            let elem = shader.clone().with_location(pos + *loc);
+        for (shader, rect) in zip(&self.shaders, &self.shader_rects) {
+            let elem = shader.clone().with_location(pos + rect.loc);
             push(TabIndicatorRenderElement::from(elem));
         }
+    }
+
+    /// Geometry of the tabs drawn by `render()`, relative to its `pos`.
+    pub fn rendered_rects(&self) -> &[Rectangle<f64, Logical>] {
+        &self.shader_rects
     }
 
     /// Extra size occupied by the tab indicator.
