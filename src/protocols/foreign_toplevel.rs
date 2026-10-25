@@ -137,6 +137,24 @@ pub fn refresh(state: &mut State) {
         });
     }
 
+    // Handle closed windows. Do this before activating the focused window, so that clients see
+    // the old window close before the new one activates.
+    protocol_state.toplevels.retain(|_, data| {
+        if data.seen == generation {
+            return true;
+        }
+
+        for instance in data.ext_list_instances.iter() {
+            instance.closed();
+        }
+
+        for instance in data.wlr_management_instances.keys() {
+            instance.closed();
+        }
+
+        false
+    });
+
     // Finally, refresh the focused window.
     if let Some((identifier, window, output)) = focused {
         let toplevel = window.toplevel().expect("no X11 support");
@@ -158,23 +176,6 @@ pub fn refresh(state: &mut State) {
             );
         });
     }
-
-    // Handle closed windows.
-    protocol_state.toplevels.retain(|_, data| {
-        if data.seen == generation {
-            return true;
-        }
-
-        for instance in data.ext_list_instances.iter() {
-            instance.closed();
-        }
-
-        for instance in data.wlr_management_instances.keys() {
-            instance.closed();
-        }
-
-        false
-    });
 }
 
 pub fn on_output_bound(state: &mut State, output: &Output, wl_output: &WlOutput) {
