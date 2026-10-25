@@ -131,6 +131,8 @@ struct CastInner {
     /// stored in order from oldest to newest, and the same ordering should be preserved when
     /// submitting completed buffers to PipeWire.
     rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint)>,
+    /// Whether the last frame was skipped for lack of a free buffer, to warn once per stall.
+    stalled: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -463,6 +465,7 @@ impl PipeWire {
             dmabufs: HashMap::new(),
             shmbufs: HashMap::new(),
             rendering_buffers: Vec::new(),
+            stalled: false,
         }));
 
         let listener =
@@ -1278,12 +1281,26 @@ impl Cast {
         drop(inner);
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
-            warn!("no available buffer in pw stream, skipping frame");
+            let mut inner = self.inner.borrow_mut();
+            // The damage above counts as sent; reset so the next frame is full and nothing is lost.
+            if let CastState::Ready {
+                damage_tracker,
+                cursor_damage_tracker,
+                last_cursor_location,
+                ..
+            } = &mut inner.state
+            {
+                *damage_tracker = None;
+                *cursor_damage_tracker = None;
+                *last_cursor_location = None;
+            }
+            inner.note_no_buffer();
             return false;
         };
         let buffer = pw_buffer.as_ptr();
 
         let mut inner = self.inner.borrow_mut();
+        inner.stalled = false;
         let inner_ = &mut *inner;
         let CastState::Ready {
             damage_tracker,
@@ -1364,9 +1381,10 @@ impl Cast {
         drop(inner);
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
-            warn!("no available buffer in pw stream, skipping frame");
+            self.inner.borrow_mut().note_no_buffer();
             return false;
         };
+        self.inner.borrow_mut().stalled = false;
         let buffer = pw_buffer.as_ptr();
 
         unsafe {
@@ -1412,6 +1430,16 @@ impl Cast {
 }
 
 impl CastInner {
+    /// Logs a skipped frame; once per stall, since a stalled consumer would hit it every frame.
+    fn note_no_buffer(&mut self) {
+        if !self.stalled {
+            self.stalled = true;
+            warn!("no available buffer in pw stream, skipping frames until one is free");
+        } else {
+            trace!("no available buffer in pw stream, skipping frame");
+        }
+    }
+
     unsafe fn on_add_buffer(
         &mut self,
         gbm: Option<&GbmDevice<DeviceFd>>,
