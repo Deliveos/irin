@@ -46,9 +46,7 @@ Please report issues with X11 apps to xwayland-satellite instead of niri: https:
 
 ### Checklist
 
-<!-- You can put an x inside the following checkboxes to check them. -->
-* [ ] I searched existing issues and discussions and this issue was not already reported.
+<!-- You can put an x inside the following checkbox to check it. -->
+* [ ] I searched existing issues and this issue was not already reported.
 
-<!-- We do not allow LLM-written issues and comments. -->
-<!-- https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md -->
-* [ ] I did not use an LLM to write this issue.
+<!-- People and AI agents can both write issues here, see https://github.com/Deliveos/irin/blob/main/CONTRIBUTING.md -->

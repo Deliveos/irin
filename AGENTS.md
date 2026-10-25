@@ -44,7 +44,7 @@ docs/wiki/             user and developer documentation
     This includes input from clients, the config, IPC and D-Bus.
 2. **Don't block the main thread.**
     Don't do blocking I/O on the main thread, and bound any work whose size a client controls.
-    This is a rule of this fork, based on the fixes for Deliveos/niri#3 (huge blur region froze niri) and Deliveos/niri#4 (blocking read on a client fd).
+    This is a rule of this fork, based on the fixes for #7 (huge blur region froze niri) and #8 (blocking read on a client fd).
 3. **Follow the design principles** in `docs/wiki/Development:-Design-Principles.md`.
 4. **Check security-related changes against** `docs/wiki/Security-Model.md`.
 
