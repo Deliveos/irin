@@ -23,14 +23,14 @@ fn set_up(config: Config) -> Fixture {
 }
 
 #[test]
-fn screenshot_targets_share_texture_without_block_out() {
+fn egl_screenshot_targets_share_texture_without_block_out() {
     let mut f = set_up(Config::default());
     let [a, b, c] = capture_texture_ids(&mut f);
     assert!(a == b && b == c, "{a} {b} {c}");
 }
 
 #[test]
-fn screenshot_targets_render_separately_with_block_out() {
+fn egl_screenshot_targets_render_separately_with_block_out() {
     let config = Config::parse_mem(r#"window-rule { block-out-from "screencast"; }"#).unwrap();
     let mut f = set_up(config);
     let [a, b, c] = capture_texture_ids(&mut f);

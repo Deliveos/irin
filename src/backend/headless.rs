@@ -39,6 +39,8 @@ impl Headless {
 
     pub fn init(&mut self, _niri: &mut Niri) {}
 
+    /// Tests that call this need a name starting with `egl_`: the Nix build has no EGL and skips
+    /// them by that prefix.
     pub fn add_renderer(&mut self) -> anyhow::Result<()> {
         if self.renderer.is_some() {
             error!("add_renderer: renderer must not already exist");
