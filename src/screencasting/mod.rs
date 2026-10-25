@@ -161,8 +161,12 @@ impl State {
                 return;
             }
             CastTarget::Output { output, .. } => {
+                // A removed output can still upgrade until stop_casts_for_target() retargets the
+                // cast in an idle callback.
                 if let Some(output) = output.upgrade() {
-                    self.niri.queue_redraw(&output);
+                    if self.niri.output_state.contains_key(&output) {
+                        self.niri.queue_redraw(&output);
+                    }
                 }
                 return;
             }
@@ -214,17 +218,19 @@ impl State {
                 let mut pointer_location = Point::default();
 
                 if self.niri.pointer_visibility.is_visible() {
-                    if let Some((pointer_pos, win_pos)) =
-                        self.niri.pointer_pos_for_window_cast(mapped)
+                    // The cached output may have just been disconnected and unmapped, before the
+                    // pointer contents are refreshed. Then there's no pointer to draw relative to
+                    // it.
+                    let output_geo = self.niri.global_space.output_geometry(output);
+                    if let (Some(output_geo), Some((pointer_pos, win_pos))) =
+                        (output_geo, self.niri.pointer_pos_for_window_cast(mapped))
                     {
                         // Pointer location must be relative to the screencast buffer.
                         // - win_pos is the position of the main window surface in output-local
                         //   coordinates
                         // - bbox.loc moves us relative to the screencast buffer
                         let buf_pos = win_pos + bbox.loc.to_f64().to_logical(scale);
-                        let output_pos =
-                            self.niri.global_space.output_geometry(output).unwrap().loc;
-                        pointer_location = pointer_pos - output_pos.to_f64() - buf_pos;
+                        pointer_location = pointer_pos - output_geo.loc.to_f64() - buf_pos;
 
                         let pos = buf_pos.to_physical_precise_round(scale).upscale(-1);
                         self.niri.render_pointer(renderer, output, &mut |elem| {

@@ -7,14 +7,17 @@ mod test_input_backend;
 
 mod animations;
 mod binds;
+mod configure_state;
 mod crash_regressions;
 mod floating;
+mod foreign_toplevel;
 mod fullscreen;
 mod ipc;
 mod layer_shell;
 mod output_enter;
 mod pointer_redraws;
 mod remove_output;
+mod screenshot;
 mod tiled_state;
 mod transactions;
 mod virtual_pointer;

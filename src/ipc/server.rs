@@ -42,6 +42,11 @@ use crate::window::Mapped;
 // number in our buffer, we drop that event stream client.
 const EVENT_STREAM_BUFFER_SIZE: usize = 64;
 
+// A client that sends more than this without a newline is dropped, so that it can't make us buffer
+// without limit. Spawn requests carry a whole argv, which Linux allows up to 6 MiB with a large
+// stack limit, so leave room for that plus JSON escaping.
+const MAX_REQUEST_SIZE: u64 = 8 * 1024 * 1024;
+
 pub struct IpcServer {
     /// Path to the IPC socket.
     ///
@@ -158,7 +163,7 @@ fn socket_dir() -> PathBuf {
         .unwrap_or_else(env::temp_dir)
 }
 
-fn on_new_ipc_client(state: &mut State, stream: UnixStream) {
+pub(crate) fn on_new_ipc_client(state: &mut State, stream: UnixStream) {
     let _span = tracy_client::span!("on_new_ipc_client");
     trace!("new IPC client connected");
 
@@ -197,7 +202,10 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
     loop {
         // Don't keep buf around to avoid clients wasting RAM by filling it with bogus data.
         let mut buf = Vec::new();
-        let res = read.read_until(b'\n', &mut buf).await;
+        let res = (&mut read)
+            .take(MAX_REQUEST_SIZE)
+            .read_until(b'\n', &mut buf)
+            .await;
         match res {
             Ok(0) => return Ok(()),
             Ok(_) => (),
@@ -206,6 +214,16 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
             Err(err) => {
                 return Err(err).context("error reading request");
             }
+        }
+        // The rest of the request is still unread, so we can't go on with this client. Tell it why
+        // first: a client that reads gets the reply before the connection closes.
+        if buf.len() as u64 == MAX_REQUEST_SIZE && buf.last() != Some(&b'\n') {
+            drop(buf);
+            let err = format!("request is longer than {MAX_REQUEST_SIZE} bytes");
+            let mut reply = serde_json::to_vec(&Reply::Err(err.clone())).unwrap_or_default();
+            reply.push(b'\n');
+            let _ = write.write_all(&reply).await;
+            anyhow::bail!(err);
         }
 
         let request = serde_json::from_slice(&buf)

@@ -44,6 +44,7 @@ impl ResizeGrab {
                 .niri
                 .cursor_manager
                 .set_cursor_image(CursorImageStatus::default_named());
+            state.niri.queue_redraw_cursor_outputs();
         }
     }
 

@@ -136,6 +136,15 @@ pub struct Mapped {
     /// State of an ongoing interactive resize.
     interactive_resize: Option<InteractiveResize>,
 
+    /// Last values given to `set_activated()`, `set_bounds()` and `set_interactive_resize()`.
+    ///
+    /// Layout calls these on every event loop iteration. After mapping, nothing else writes these
+    /// parts of the pending state, so repeating a value can be skipped. This also lets
+    /// `server_pending` stay empty while nothing changes, see `configure_intent()`.
+    last_activated: Option<bool>,
+    last_bounds: Cell<Option<Size<i32, Logical>>>,
+    last_resizing: Option<bool>,
+
     /// Last time interactive resize was started.
     ///
     /// Used for double-resize-click tracking.
@@ -307,6 +316,9 @@ impl Mapped {
             transaction_for_next_configure: None,
             pending_transactions: Vec::new(),
             interactive_resize: None,
+            last_activated: None,
+            last_bounds: Cell::new(None),
+            last_resizing: None,
             last_interactive_resize_start: Cell::new(None),
             is_windowed_fullscreen: false,
             is_pending_windowed_fullscreen: false,
@@ -1006,6 +1018,11 @@ impl LayoutElement for Mapped {
     }
 
     fn set_activated(&mut self, active: bool) {
+        if self.last_activated == Some(active) {
+            return;
+        }
+        self.last_activated = Some(active);
+
         let changed = self.toplevel().with_pending_state(|state| {
             if active {
                 state.states.set(xdg_toplevel::State::Activated)
@@ -1029,6 +1046,10 @@ impl LayoutElement for Mapped {
     }
 
     fn set_bounds(&self, bounds: Size<i32, Logical>) {
+        if self.last_bounds.replace(Some(bounds)) == Some(bounds) {
+            return;
+        }
+
         self.toplevel().with_pending_state(|state| {
             state.bounds = Some(bounds);
         });
@@ -1044,7 +1065,7 @@ impl LayoutElement for Mapped {
         }
 
         with_toplevel_role_and_current(self.toplevel(), |attributes, current_committed| {
-            if let Some(server_pending) = &attributes.server_pending {
+            let intent = if let Some(server_pending) = &attributes.server_pending {
                 let current_server = attributes.current_server_state();
                 if *server_pending != current_server {
                     // Something changed. Check if the only difference is the size, and if the
@@ -1089,7 +1110,15 @@ impl LayoutElement for Mapped {
             } else {
                 // Nothing changed since the last configure.
                 ConfigureIntent::NotNeeded
+            };
+
+            // An unchanged pending state means nothing to send. Dropping it saves cloning and
+            // comparing the whole configure state on every later call.
+            if matches!(intent, ConfigureIntent::NotNeeded) {
+                attributes.server_pending = None;
             }
+
+            intent
         })
     }
 
@@ -1393,13 +1422,17 @@ impl LayoutElement for Mapped {
     }
 
     fn set_interactive_resize(&mut self, data: Option<InteractiveResizeData>) {
-        self.toplevel().with_pending_state(|state| {
-            if data.is_some() {
-                state.states.set(xdg_toplevel::State::Resizing);
-            } else {
-                state.states.unset(xdg_toplevel::State::Resizing);
-            }
-        });
+        let resizing = data.is_some();
+        if self.last_resizing != Some(resizing) {
+            self.last_resizing = Some(resizing);
+            self.toplevel().with_pending_state(|state| {
+                if resizing {
+                    state.states.set(xdg_toplevel::State::Resizing);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Resizing);
+                }
+            });
+        }
 
         if let Some(data) = data {
             self.interactive_resize = Some(InteractiveResize::Ongoing(data));
