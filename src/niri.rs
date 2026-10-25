@@ -2704,6 +2704,7 @@ impl Niri {
                 Timer::from_duration(Duration::from_secs(1)),
                 |_, _, state| {
                     state.niri.send_frame_callbacks_on_fallback_timer();
+                    state.niri.release_idle_effect_buffers();
                     TimeoutAction::ToDuration(Duration::from_secs(1))
                 },
             )
@@ -5435,6 +5436,17 @@ impl Niri {
                 FRAME_CALLBACK_THROTTLE,
                 should_send,
             );
+        }
+    }
+
+    /// Frees blur/xray buffers that haven't been used for a while; each can be tens of MB.
+    pub fn release_idle_effect_buffers(&mut self) {
+        // Long enough that a static screen doesn't re-render them on every small change.
+        const MAX_IDLE: Duration = Duration::from_secs(10);
+
+        let now = get_monotonic_time();
+        for state in self.output_state.values() {
+            state.xray.release_idle_buffers(now, MAX_IDLE);
         }
     }
 

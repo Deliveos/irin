@@ -1,4 +1,5 @@
 use std::mem;
+use std::time::Duration;
 
 use anyhow::{ensure, Context as _};
 use smithay::backend::allocator::Fourcc;
@@ -13,6 +14,7 @@ use smithay::utils::{Buffer, Logical, Physical, Scale, Size, Transform};
 
 use crate::niri::OutputRenderElements;
 use crate::render_helpers::blur::{Blur, BlurOptions};
+use crate::utils::get_monotonic_time;
 
 #[derive(Debug)]
 pub struct EffectBuffer {
@@ -35,6 +37,10 @@ pub struct EffectBuffer {
 
     /// Commit counter that takes into account both original and blurred texture changes.
     commit_counter: CommitCounter,
+
+    /// Monotonic time of the last `prepare()`, and of the last one that blurred.
+    last_prepared: Duration,
+    last_blurred: Duration,
 }
 
 #[derive(Debug)]
@@ -83,6 +89,29 @@ impl EffectBuffer {
             offscreen: None,
             blur: None,
             commit_counter: CommitCounter::default(),
+            last_prepared: Duration::ZERO,
+            last_blurred: Duration::ZERO,
+        }
+    }
+
+    /// Frees the GPU textures that weren't prepared within `max_idle`.
+    ///
+    /// They are recreated on the next `prepare()`.
+    pub fn release_if_idle(&mut self, now: Duration, max_idle: Duration) {
+        let mut released = false;
+        if self.offscreen.is_some() && now.saturating_sub(self.last_prepared) > max_idle {
+            self.offscreen = None;
+            released = true;
+        }
+        if self.blur.is_some() && now.saturating_sub(self.last_blurred) > max_idle {
+            self.blur = None;
+            if let Some(offscreen) = &mut self.offscreen {
+                offscreen.blurred = None;
+            }
+            released = true;
+        }
+        if released {
+            self.commit_counter.increment();
         }
     }
 
@@ -140,6 +169,12 @@ impl EffectBuffer {
     }
 
     pub fn prepare(&mut self, renderer: &mut GlesRenderer, blur: bool) -> bool {
+        let now = get_monotonic_time();
+        self.last_prepared = now;
+        if blur {
+            self.last_blurred = now;
+        }
+
         if let Err(err) = self.prepare_offscreen(renderer) {
             warn!("error preparing offscreen: {err:?}");
             return false;
