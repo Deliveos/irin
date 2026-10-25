@@ -40,6 +40,11 @@ impl Shadow {
         scale: f64,
         alpha: f32,
     ) {
+        // Runs every frame for every tile; render() draws nothing when off, so skip the math.
+        if !self.config.on {
+            return;
+        }
+
         let ceil = |logical: f64| (logical * scale).ceil() / scale;
 
         // All of this stuff should end up aligned to physical pixels because:
