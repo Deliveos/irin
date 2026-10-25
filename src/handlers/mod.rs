@@ -853,13 +853,19 @@ impl OutputManagementHandler for State {
         // The request only covers connected outputs; keep config for the others.
         {
             let outputs = &mut self.niri.config.borrow_mut().outputs.0;
-            outputs.retain(|old| {
-                !config
-                    .0
-                    .iter()
-                    .any(|new| new.name.eq_ignore_ascii_case(&old.name))
-            });
-            outputs.extend(config.0);
+            for new in config.0 {
+                // Replace the entry in place: entries with different names can match the same
+                // output and the first match wins, so moving an entry changes which entry an
+                // output gets.
+                if let Some(old) = outputs
+                    .iter_mut()
+                    .find(|old| old.name.eq_ignore_ascii_case(&new.name))
+                {
+                    *old = new;
+                } else {
+                    outputs.push(new);
+                }
+            }
         }
         self.reload_output_config();
     }
