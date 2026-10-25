@@ -56,8 +56,6 @@ Test similar and related edge cases too, to check that the fix doesn't introduce
 Write your findings in the pull request, and re-test after the author updates the code.
 Only report testing you actually did.
 
-Changes users can see (layout, animations, input, rendering) are tested by hand by a human before they are merged.
-
 ## Reviewing pull requests
 
 - Check the logic and edge cases; look for scenarios the author didn't handle.
@@ -67,7 +65,7 @@ Changes users can see (layout, animations, input, rendering) are tested by hand 
 
 Point out everything you find as review comments, and be constructive and respectful.
 If everything looks good, say so.
-Reviews and approvals from agents are comments only: only a human approves and merges.
+People and agents with write access may approve and merge once CI is green on the latest commit and no review threads are unresolved.
 
 ## Writing pull requests
 
