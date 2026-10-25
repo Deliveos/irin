@@ -3965,6 +3965,46 @@ impl Niri {
         state.lock_surface.as_ref().map(|s| s.wl_surface()).cloned()
     }
 
+    /// Schedules redraws after the pointer moved from `old` to `new`.
+    pub fn queue_redraw_pointer_moved(
+        &mut self,
+        old: Point<f64, Logical>,
+        new: Point<f64, Logical>,
+    ) {
+        // These react to motion anywhere, so keep redrawing everything for them.
+        if self.screenshot_ui.is_open()
+            || self.window_mru_ui.is_open()
+            || self.dnd_icon.is_some()
+            || self.seat.get_pointer().unwrap().is_grabbed()
+        {
+            self.queue_redraw_all();
+            return;
+        }
+
+        // shortcut: assumes the cursor image stays within MARGIN logical px of the pointer; a
+        // larger client cursor surface can leave a stale copy on a neighboring output until that
+        // output redraws for another reason. Use the real cursor bbox if this shows up.
+        const MARGIN: f64 = 256.;
+        let near = |geo: Rectangle<f64, Logical>, pos: Point<f64, Logical>| {
+            geo.loc.x - MARGIN <= pos.x
+                && pos.x < geo.loc.x + geo.size.w + MARGIN
+                && geo.loc.y - MARGIN <= pos.y
+                && pos.y < geo.loc.y + geo.size.h + MARGIN
+        };
+        let outputs: Vec<_> = self
+            .global_space
+            .outputs()
+            .filter(|output| {
+                let geo = self.global_space.output_geometry(output).unwrap().to_f64();
+                near(geo, old) || near(geo, new)
+            })
+            .cloned()
+            .collect();
+        for output in outputs {
+            self.queue_redraw(&output);
+        }
+    }
+
     /// Schedules an immediate redraw on all outputs if one is not already scheduled.
     pub fn queue_redraw_all(&mut self) {
         for state in self.output_state.values_mut() {
@@ -7007,6 +7047,8 @@ impl Niri {
         if let Some(output) = &new_focus.output {
             if current_focus.output.as_ref() != Some(output) {
                 self.layout.focus_output(output);
+                // Pointer motion only redraws outputs near the cursor.
+                self.queue_redraw_all();
             }
         }
 
@@ -7036,12 +7078,15 @@ impl Niri {
 
                 self.layout.activate_window_without_raising(window);
                 self.layer_shell_on_demand_focus = None;
+                // The previously focused window may be on another output.
+                self.queue_redraw_all();
             }
         }
 
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+                self.queue_redraw_all();
             }
         }
     }
