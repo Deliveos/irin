@@ -1,6 +1,7 @@
 use std::array;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use glam::{Mat3, Vec2};
 use niri_config::CornerRadius;
@@ -84,6 +85,14 @@ pub struct XrayElement {
 }
 
 impl Xray {
+    /// Frees effect buffers that weren't used recently, e.g. for a screencast that ended or
+    /// after the last blurred window closed.
+    pub fn release_idle_buffers(&self, now: Duration, max_idle: Duration) {
+        for buf in self.background.iter().chain(&self.backdrop) {
+            buf.borrow_mut().release_if_idle(now, max_idle);
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             background: array::from_fn(|_| Rc::new(RefCell::new(EffectBuffer::new()))),
