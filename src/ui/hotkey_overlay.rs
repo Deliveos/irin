@@ -60,6 +60,8 @@ impl HotkeyOverlay {
     pub fn hide(&mut self) -> bool {
         if self.is_open {
             self.is_open = false;
+            // Free the textures; the overlay is rarely reopened.
+            self.buffers.get_mut().clear();
             true
         } else {
             false
