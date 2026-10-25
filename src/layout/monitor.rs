@@ -1788,20 +1788,26 @@ impl<W: LayoutElement> Monitor<W> {
                         }
                     }
                     2 => {
+                        // Windows moving between workspaces can be anywhere, don't cull.
                         ws.render_scrolling(
                             ctx.r(),
                             xray_pos,
                             focus_ring,
                             RenderLayer::MovingBetweenWorkspaces,
+                            None,
                             push!(),
                         );
                     }
                     _ => {
+                        // The output's horizontal range in workspace-local coordinates: elements
+                        // are scaled by zoom from the origin, then moved to geo.loc.
+                        let visible_x = (-geo.loc.x / zoom, (self.view_size.w - geo.loc.x) / zoom);
                         ws.render_scrolling(
                             ctx.r(),
                             xray_pos,
                             focus_ring,
                             RenderLayer::Normal,
+                            Some(visible_x),
                             push!(),
                         );
                     }

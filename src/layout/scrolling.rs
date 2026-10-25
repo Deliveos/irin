@@ -2966,12 +2966,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         Some(col.tiles[col.active_tile_idx].window())
     }
 
+    /// Renders the columns.
+    ///
+    /// `visible_x` is the horizontal range shown on screen, in the same coordinates as the
+    /// rendered elements; columns far outside it are skipped. `None` renders all columns.
     pub fn render<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        visible_x: Option<(f64, f64)>,
         push: &mut dyn FnMut(ScrollingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
@@ -2997,6 +3002,19 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             if layer.is_normal() == col.is_moving_between_workspaces() {
                 first = false;
                 continue;
+            }
+
+            // Skip columns far off-screen. The padding generously covers shadows, focus rings,
+            // tab indicators, tile animations and popups, which stay within the window width.
+            if let Some((lo, hi)) = visible_x {
+                let pad = (hi - lo) / 2.;
+                if col_pos.x + col.width() + pad < lo || hi < col_pos.x - pad {
+                    for tile in &col.tiles {
+                        tile.window().set_offscreen_data(None);
+                    }
+                    first = false;
+                    continue;
+                }
             }
 
             // Draw the tab indicator on top.
