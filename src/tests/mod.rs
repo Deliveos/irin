@@ -9,6 +9,8 @@ mod animations;
 mod binds;
 mod configure_state;
 mod crash_regressions;
+#[cfg(feature = "dbus")]
+mod display_config;
 mod floating;
 mod foreign_toplevel;
 mod fullscreen;

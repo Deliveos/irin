@@ -74,18 +74,7 @@ impl DBusServers {
             let display_config = DisplayConfig::new(to_niri, backend.ipc_outputs());
             niri.event_loop
                 .insert_source(from_display_config, move |event, _, state| match event {
-                    calloop::channel::Event::Msg(new_conf) => {
-                        for (name, conf) in new_conf {
-                            state.modify_output_config(&name, move |output| {
-                                if let Some(new_output) = conf {
-                                    *output = new_output;
-                                } else {
-                                    output.off = true;
-                                }
-                            });
-                        }
-                        state.reload_output_config();
-                    }
+                    calloop::channel::Event::Msg(new_conf) => state.on_display_config_msg(new_conf),
                     calloop::channel::Event::Closed => (),
                 })
                 .unwrap();
