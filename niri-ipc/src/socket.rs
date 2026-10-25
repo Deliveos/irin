@@ -51,7 +51,21 @@ impl Socket {
     pub fn send(&mut self, request: Request) -> io::Result<Reply> {
         let mut buf = serde_json::to_string(&request).unwrap();
         buf.push('\n');
-        self.stream.get_mut().write_all(buf.as_bytes())?;
+        if let Err(err) = self.stream.get_mut().write_all(buf.as_bytes()) {
+            // niri rejects a request that's too long before reading all of it: it replies, then
+            // closes the connection, so the rest of the write fails. Return the reply if it came.
+            let closed = matches!(
+                err.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            );
+            buf.clear();
+            if closed && self.stream.read_line(&mut buf).is_ok() {
+                if let Ok(reply) = serde_json::from_str(&buf) {
+                    return Ok(reply);
+                }
+            }
+            return Err(err);
+        }
 
         buf.clear();
         self.stream.read_line(&mut buf)?;
