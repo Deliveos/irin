@@ -780,10 +780,19 @@ impl<W: LayoutElement> Tile<W> {
 
     /// Returns the location of the window's visual geometry within this Tile.
     pub fn window_loc(&self) -> Point<f64, Logical> {
+        let window_size = self.window_size();
+        self.window_loc_for(window_size, self.tile_size_for(window_size))
+    }
+
+    fn window_loc_for(
+        &self,
+        window_size: Size<f64, Logical>,
+        tile_size: Size<f64, Logical>,
+    ) -> Point<f64, Logical> {
         let mut loc = Point::from((0., 0.));
 
-        let window_size = self.animated_window_size();
-        let target_size = self.animated_tile_size();
+        let window_size = self.animate_window_size(window_size);
+        let target_size = self.animate_tile_size(tile_size);
 
         // Center the window within its tile.
         //
@@ -805,7 +814,11 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn tile_size(&self) -> Size<f64, Logical> {
-        let mut size = self.window_size();
+        self.tile_size_for(self.window_size())
+    }
+
+    fn tile_size_for(&self, window_size: Size<f64, Logical>) -> Size<f64, Logical> {
+        let mut size = window_size;
 
         if self.sizing_mode.is_fullscreen() {
             // Normally we'd just return the fullscreen size here, but this makes things a bit
@@ -843,11 +856,13 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn window_size(&self) -> Size<f64, Logical> {
-        let mut size = self.window.size().to_f64();
-        size = size
+        self.round_window_size(self.window.size())
+    }
+
+    fn round_window_size(&self, size: Size<i32, Logical>) -> Size<f64, Logical> {
+        size.to_f64()
             .to_physical_precise_round(self.scale)
-            .to_logical(self.scale);
-        size
+            .to_logical(self.scale)
     }
 
     pub fn window_expected_or_current_size(&self) -> Size<f64, Logical> {
@@ -860,8 +875,10 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn animated_window_size(&self) -> Size<f64, Logical> {
-        let mut size = self.window_size();
+        self.animate_window_size(self.window_size())
+    }
 
+    fn animate_window_size(&self, mut size: Size<f64, Logical>) -> Size<f64, Logical> {
         if let Some(resize) = &self.resize_animation {
             let val = resize.anim.value();
             let size_from = resize.size_from.to_f64();
@@ -877,8 +894,10 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn animated_tile_size(&self) -> Size<f64, Logical> {
-        let mut size = self.tile_size();
+        self.animate_tile_size(self.tile_size())
+    }
 
+    fn animate_tile_size(&self, mut size: Size<f64, Logical>) -> Size<f64, Logical> {
         if let Some(resize) = &self.resize_animation {
             let val = resize.anim.value();
             let size_from = resize.tile_size_from.to_f64();
@@ -930,12 +949,16 @@ impl<W: LayoutElement> Tile<W> {
     ///
     /// Only the sizing properties that a [`Tile`] can fill are filled.
     pub fn ipc_layout_template(&self) -> WindowLayout {
+        // Window::size() takes several locks, so get it once.
+        let size = self.window().size();
+        let window_size = self.round_window_size(size);
+        let tile_size = self.tile_size_for(window_size);
         WindowLayout {
             pos_in_scrolling_layout: None,
-            tile_size: self.tile_size().into(),
-            window_size: self.window().size().into(),
+            tile_size: tile_size.into(),
+            window_size: size.into(),
             tile_pos_in_workspace_view: None,
-            window_offset_in_tile: self.window_loc().into(),
+            window_offset_in_tile: self.window_loc_for(window_size, tile_size).into(),
         }
     }
 

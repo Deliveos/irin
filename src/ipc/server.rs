@@ -113,6 +113,11 @@ impl IpcServer {
         })
     }
 
+    #[cfg(test)]
+    pub fn event_stream_state(&self) -> std::cell::Ref<'_, EventStreamState> {
+        self.event_stream_state.borrow()
+    }
+
     fn send_event(&self, event: Event) {
         let mut streams = self.event_streams.borrow_mut();
         let mut to_remove = Vec::new();
@@ -702,11 +707,13 @@ impl State {
         let mut batch_change_layouts: Vec<(u64, WindowLayout)> = Vec::new();
 
         // Check for window changes.
-        let mut seen = HashSet::new();
+        //
+        // Count the windows that the state already has, so that closed windows can be detected
+        // without collecting every id on every iteration.
+        let mut seen_known = 0;
         let mut focused_id = None;
         layout.with_windows(|mapped, _, ws_id, window_layout| {
             let id = mapped.id().get();
-            seen.insert(id);
 
             if mapped.is_focused() {
                 focused_id = Some(id);
@@ -717,6 +724,7 @@ impl State {
                 events.push(Event::WindowOpenedOrChanged { window });
                 return;
             };
+            seen_known += 1;
 
             let workspace_id = ws_id.map(|id| id.get());
             let mut changed =
@@ -765,10 +773,12 @@ impl State {
             });
         }
 
-        // Check for closed windows.
+        // Check for closed windows. If every window in the state was seen, none were closed.
+        let alive = (seen_known < state.windows.len())
+            .then(|| HashSet::<u64>::from_iter(layout.windows().map(|(_, win)| win.id().get())));
         let mut ipc_focused_id = None;
         for (id, ipc_win) in &state.windows {
-            if !seen.contains(id) {
+            if alive.as_ref().is_some_and(|alive| !alive.contains(id)) {
                 events.push(Event::WindowClosed { id: *id });
             }
 

@@ -10,6 +10,7 @@ mod binds;
 mod crash_regressions;
 mod floating;
 mod fullscreen;
+mod ipc;
 mod layer_shell;
 mod pointer_redraws;
 mod remove_output;
