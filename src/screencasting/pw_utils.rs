@@ -67,6 +67,9 @@ use shm_mapping::ShmMapping;
 
 // Give a 0.1 ms allowance for presentation time errors.
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
+// Bounds for retrying a frame that was skipped for lack of a free buffer.
+const MIN_RETRY_DELAY: Duration = Duration::from_millis(10);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
 const SHM_BLOCKS: usize = 1;
 const SHM_BYTES_PER_PIXEL: usize = 4;
 
@@ -111,6 +114,8 @@ pub struct Cast {
     scheduled_redraw: Option<RegistrationToken>,
     /// Retry after a frame was skipped for lack of a free buffer.
     retry_redraw: Option<RegistrationToken>,
+    /// Retries since a frame last got a buffer, to back off from a consumer that keeps them all.
+    retry_count: u32,
     // Incremented once per successful frame, stored in buffer meta.
     sequence_counter: u64,
     inner: Rc<RefCell<CastInner>>,
@@ -958,6 +963,7 @@ impl PipeWire {
             last_frame_interval: Duration::ZERO,
             scheduled_redraw: None,
             retry_redraw: None,
+            retry_count: 0,
             sequence_counter: 0,
             inner,
         };
@@ -1118,22 +1124,47 @@ impl Cast {
             return;
         }
 
+        // Back off while the consumer keeps every buffer, so that a stalled consumer doesn't keep
+        // niri redrawing at the cast's frame rate.
         let interval = self.inner.borrow().min_time_between_frames;
-        let timer = Timer::from_duration(interval.max(Duration::from_millis(10)));
+        let delay = interval
+            .max(MIN_RETRY_DELAY)
+            .saturating_mul(1 << self.retry_count.min(7))
+            .min(MAX_RETRY_DELAY);
+        self.retry_count = self.retry_count.saturating_add(1);
+
+        let timer = Timer::from_duration(delay);
         let stream_id = self.stream_id;
         let token = self
             .event_loop
             .insert_source(timer, move |_, _, state| {
+                let is_locked = state.niri.is_locked();
                 let casts = &mut state.niri.casting.casts;
-                if let Some(cast) = casts.iter_mut().find(|cast| cast.stream_id == stream_id) {
-                    cast.retry_redraw = None;
-                    state.redraw_cast(stream_id);
+                let Some(cast) = casts.iter_mut().find(|cast| cast.stream_id == stream_id) else {
+                    return TimeoutAction::Drop;
+                };
+                cast.retry_redraw = None;
+
+                // A stream that isn't streaming gets no buffers back, and it redraws when it
+                // resumes. Window casts aren't rendered while locked, and unlocking redraws them.
+                let is_window = matches!(cast.target, CastTarget::Window { .. });
+                if !cast.is_active() || (is_locked && is_window) {
+                    return TimeoutAction::Drop;
                 }
 
+                state.redraw_cast(stream_id);
                 TimeoutAction::Drop
             })
             .unwrap();
         self.retry_redraw = Some(token);
+    }
+
+    /// Drops a pending retry and its back-off, since a buffer was available after all.
+    fn remove_retry_redraw(&mut self) {
+        self.retry_count = 0;
+        if let Some(token) = self.retry_redraw.take() {
+            self.event_loop.remove(token);
+        }
     }
 
     fn remove_scheduled_redraw(&mut self) {
@@ -1335,6 +1366,7 @@ impl Cast {
             self.schedule_retry();
             return false;
         };
+        self.remove_retry_redraw();
         let buffer = pw_buffer.as_ptr();
 
         let mut inner = self.inner.borrow_mut();
@@ -1422,6 +1454,7 @@ impl Cast {
             self.schedule_retry();
             return false;
         };
+        self.remove_retry_redraw();
         let buffer = pw_buffer.as_ptr();
 
         unsafe {
