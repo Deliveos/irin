@@ -86,6 +86,8 @@ cargo test --all --exclude niri-visual-tests
 ```
 
 CI runs the rest (feature combinations, MSRV, slow randomized tests, musl, FreeBSD, Nix) on your pull request; get it green before asking for review.
+CI doesn't start while the pull request has merge conflicts, so rebase onto `main` first.
+A push to a branch without a pull request doesn't start CI either; open a draft pull request, or run the `CI` workflow on the branch by hand.
 The `nix` job never fails the run (its steps have `continue-on-error`), so if you change Nix files, read its log.
 The docs jobs run only in upstream niri, so the CI parts of `docs/wiki/Development:-Documenting-niri.md` don't apply here.
 If you change anything under `docs/`, run `uv sync --locked` and `uv run mkdocs build` in `docs/` yourself; the build fails on broken links or anchors and on pages missing from `nav`.

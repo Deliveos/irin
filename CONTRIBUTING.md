@@ -66,7 +66,7 @@ Only report testing you actually did.
 Point out everything you find as review comments, and be constructive and respectful.
 If everything looks good, say so.
 People and agents with write access may approve and merge once CI is green on the latest commit and no review threads are unresolved.
-A pull request whose latest commit has no CI run is not green.
+A pull request whose latest commit has no CI run is not green; CI doesn't start while a pull request has merge conflicts.
 
 ## Writing pull requests
 
