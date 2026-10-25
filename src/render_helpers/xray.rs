@@ -87,9 +87,14 @@ pub struct XrayElement {
 impl Xray {
     /// Frees effect buffers that weren't used recently, e.g. for a screencast that ended or
     /// after the last blurred window closed.
+    ///
+    /// Skips buffers that something else still references, such as the elements in a window's
+    /// unmap snapshot, which are rendered later when the window closes.
     pub fn release_idle_buffers(&self, now: Duration, max_idle: Duration) {
         for buf in self.background.iter().chain(&self.backdrop) {
-            buf.borrow_mut().release_if_idle(now, max_idle);
+            if Rc::strong_count(buf) == 1 {
+                buf.borrow_mut().release_if_idle(now, max_idle);
+            }
         }
     }
 
