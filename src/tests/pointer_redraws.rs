@@ -84,3 +84,32 @@ fn cursor_redraws_only_outputs_it_is_drawn_on() {
     niri.queue_redraw_cursor_outputs();
     assert_eq!(queued(niri, &outputs), [false, false]);
 }
+
+#[test]
+fn cursor_wider_than_output_redraws_on_motion() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    f.add_output(2, (8, 8));
+    let output1 = f.niri_output(1);
+    let output2 = f.niri_output(2);
+    let outputs = [&output1, &output2];
+
+    let niri = f.niri();
+    let geo2 = niri
+        .global_space
+        .output_geometry(&output2)
+        .unwrap()
+        .to_f64();
+    let bbox = niri.cursor_manager.current_cursor_bbox(1).unwrap();
+    // The test relies on the cursor covering the whole output with room to move.
+    assert!(bbox.size.w >= geo2.size.w + 2. && bbox.size.h >= geo2.size.h + 2.);
+
+    // Put the cursor's top-left corner at the output's top-left corner.
+    let pos = geo2.loc - bbox.loc;
+    move_pointer(niri, pos);
+    assert!(refresh(niri, &outputs)[1]);
+
+    // The part of the cursor on the output moves even though it still covers the whole output.
+    move_pointer(niri, pos - Point::from((1., 1.)));
+    assert!(refresh(niri, &outputs)[1]);
+}

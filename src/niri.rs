@@ -509,8 +509,8 @@ pub struct OutputState {
     pub on_demand_vrr_enabled: bool,
     // After the last redraw, some ongoing animations still remain.
     pub unfinished_animations_remain: bool,
-    /// Part of the cursor and DnD icon shown on this output, in global logical coordinates, as of
-    /// the last `refresh_pointer_redraws()`.
+    /// Area of the cursor and DnD icon if any of it is shown on this output, in global logical
+    /// coordinates, as of the last `refresh_pointer_redraws()`.
     pub cursor_rect: Option<Rectangle<f64, Logical>>,
     /// Last sequence received in a vblank event.
     pub last_drm_sequence: Option<u32>,
@@ -874,10 +874,11 @@ impl State {
 
         self.niri.cursor_manager.check_cursor_image_surface_alive();
         self.niri.refresh_pointer_outputs();
-        self.niri.refresh_pointer_redraws();
         self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
+        // After refresh_pointer_contents(), which can change the cursor image and visibility.
+        self.niri.refresh_pointer_redraws();
         foreign_toplevel::refresh(self);
         ext_workspace::refresh(self);
         self.refresh_image_copy_capture();
@@ -4005,6 +4006,9 @@ impl Niri {
             .as_ref()
             .map(|icon| bbox_from_surface_tree(&icon.surface, icon.offset).to_f64());
 
+        // Outputs usually share a scale, so don't recompute the cursor bbox for each of them.
+        let mut last_cursor_bbox = None;
+
         for (output, state) in &mut self.output_state {
             let Some(geo) = self.global_space.output_geometry(output) else {
                 continue;
@@ -4012,9 +4016,15 @@ impl Niri {
 
             let rect = if is_visible {
                 let scale = output.current_scale();
-                let cursor_bbox = self
-                    .cursor_manager
-                    .current_cursor_bbox(scale.integer_scale());
+                let integer_scale = scale.integer_scale();
+                let cursor_bbox = match last_cursor_bbox {
+                    Some((last_scale, bbox)) if last_scale == integer_scale => bbox,
+                    _ => {
+                        let bbox = self.cursor_manager.current_cursor_bbox(integer_scale);
+                        last_cursor_bbox = Some((integer_scale, bbox));
+                        bbox
+                    }
+                };
                 let bbox = match (cursor_bbox, dnd_bbox) {
                     (Some(a), Some(b)) => Some(a.merge(b)),
                     (a, b) => a.or(b),
@@ -4024,7 +4034,9 @@ impl Niri {
                     let pad = 1. / scale.fractional_scale().min(1.);
                     bbox.loc += pointer_pos - Point::from((pad, pad));
                     bbox.size += Size::from((pad * 2., pad * 2.));
-                    bbox.intersection(geo.to_f64())
+                    // Keep the whole bbox rather than the part on this output: a cursor wider than
+                    // the output can move without changing that part.
+                    bbox.overlaps(geo.to_f64()).then_some(bbox)
                 })
             } else {
                 None
