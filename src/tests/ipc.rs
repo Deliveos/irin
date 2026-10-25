@@ -69,3 +69,44 @@ fn ipc_tracks_opened_and_closed_windows() {
     f.roundtrip(id);
     assert_eq!(ipc_titles(&mut f), ["c", "d"]);
 }
+
+#[test]
+fn socket_gets_reply_to_oversized_request() {
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use niri_ipc::socket::Socket;
+    use niri_ipc::{Action, Request};
+
+    let mut f = Fixture::new();
+    let dir = std::env::temp_dir().join(format!("niri-test-ipc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("socket");
+    let listener = UnixListener::bind(&path).unwrap();
+
+    // Longer than niri's limit by more than a socket buffer holds, so niri closes the connection
+    // while the client is still writing.
+    let command = vec!["a".repeat(12 << 20)];
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let request = Request::Action(Action::Spawn { command });
+        let reply = Socket::connect_to(&path).and_then(|mut socket| socket.send(request));
+        let _ = tx.send(reply);
+    });
+    let (server, _) = listener.accept().unwrap();
+    crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let reply = loop {
+        f.state.server.dispatch();
+        if let Ok(reply) = rx.recv_timeout(Duration::from_millis(1)) {
+            break reply;
+        }
+        assert!(Instant::now() < deadline, "no reply from niri");
+    };
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let err = reply.unwrap().unwrap_err();
+    assert!(err.starts_with("request is longer than"), "{err}");
+}
