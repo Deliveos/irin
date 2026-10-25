@@ -2447,7 +2447,7 @@ impl State {
             },
         );
 
-        self.niri.layout.with_windows(|mapped, _, _, _| {
+        for (_, mapped) in self.niri.layout.windows() {
             let id = mapped.id().get();
             let props = with_toplevel_role(mapped.toplevel(), |role| {
                 gnome_shell_introspect::WindowProperties {
@@ -2464,7 +2464,7 @@ impl State {
             });
 
             windows.insert(id, props);
-        });
+        }
 
         let msg = NiriToIntrospect::Windows(windows);
         if let Err(err) = to_introspect.send_blocking(msg) {
