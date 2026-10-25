@@ -866,10 +866,6 @@ impl State {
         self.refresh_popup_grab();
         self.update_keyboard_focus();
 
-        // Should be called before refresh_layout() because that one will refresh other window
-        // states and then send a pending configure.
-        self.niri.refresh_window_states();
-
         // Needs to be called after updating the keyboard focus.
         self.niri.refresh_layout();
 
@@ -1765,6 +1761,8 @@ impl State {
         let power_key_handling_changed =
             config.input.disable_power_key_handling != old_config.input.disable_power_key_handling;
 
+        let prefer_no_csd_changed = config.prefer_no_csd != old_config.prefer_no_csd;
+
         // Reload the repeat info.
         if config.input.keyboard.repeat_rate != old_config.input.keyboard.repeat_rate
             || config.input.keyboard.repeat_delay != old_config.input.keyboard.repeat_delay
@@ -1902,6 +1900,12 @@ impl State {
         // Now with a &mut self we can reload the xkb config.
         if reload_xkb {
             self.load_configured_keymap();
+        }
+
+        // prefer-no-csd feeds into the tiled state, which isn't polled. Window rule changes update
+        // it in recompute_window_rules() below.
+        if prefer_no_csd_changed {
+            self.niri.refresh_window_states();
         }
 
         // The key mapping follows the config, so the logind inhibitor must too, otherwise logind
@@ -4416,6 +4420,10 @@ impl Niri {
         self.idle_notifier_state.set_is_inhibited(is_inhibited);
     }
 
+    /// Recomputes the tiled state of all windows, e.g. after prefer-no-csd changed.
+    ///
+    /// Inputs of the tiled state change rarely, so this isn't polled: decoration handlers, window
+    /// rule changes and mapping update single windows.
     pub fn refresh_window_states(&mut self) {
         let _span = tracy_client::span!("Niri::refresh_window_states");
 
@@ -4424,6 +4432,20 @@ impl Niri {
             mapped.update_tiled_state(config.prefer_no_csd);
         });
         drop(config);
+    }
+
+    /// Recomputes the tiled state of the window with this surface, if any.
+    pub fn update_tiled_state(&self, surface: &WlSurface) {
+        let prefer_no_csd = self.config.borrow().prefer_no_csd;
+        if let Some((mapped, _)) = self.layout.find_window_and_output(surface) {
+            mapped.update_tiled_state(prefer_no_csd);
+        } else if let Some(unmapped) = self.unmapped_windows.get(surface) {
+            // Before the initial configure, it computes the tiled state itself.
+            if let InitialConfigureState::Configured { rules, .. } = &unmapped.state {
+                let toplevel = unmapped.window.toplevel().expect("no X11 support");
+                crate::utils::update_tiled_state(toplevel, prefer_no_csd, rules.tiled_state);
+            }
+        }
     }
 
     pub fn refresh_window_rules(&mut self) {
@@ -4435,21 +4457,22 @@ impl Niri {
         let mut windows = vec![];
         let mut outputs = HashSet::new();
         self.layout.with_windows_mut(|mapped, output| {
-            if mapped.recompute_window_rules_if_needed(window_rules, self.is_at_startup) {
+            if mapped.recompute_window_rules_if_needed(
+                window_rules,
+                self.is_at_startup,
+                config.prefer_no_csd,
+            ) {
                 windows.push(mapped.window.clone());
 
                 if let Some(output) = output {
                     outputs.insert(output.clone());
                 }
-
-                // Since refresh_window_rules() is called after refresh_layout(), we need to update
-                // the tiled state right here, so that it's picked up by the following
-                // send_pending_configure().
-                mapped.update_tiled_state(config.prefer_no_csd);
             }
         });
         drop(config);
 
+        // Since refresh_window_rules() is called after refresh_layout(), send the configure right
+        // here, so that the tiled state from the new rules isn't delayed.
         for win in windows {
             self.layout.update_window(&win, None);
             win.toplevel()
@@ -7250,7 +7273,8 @@ impl Niri {
         let _span = tracy_client::span!("Niri::recompute_window_rules");
 
         let changed = {
-            let window_rules = &self.config.borrow().window_rules;
+            let config = self.config.borrow();
+            let window_rules = &config.window_rules;
 
             for unmapped in self.unmapped_windows.values_mut() {
                 let new_rules = ResolvedWindowRules::compute(
@@ -7265,7 +7289,11 @@ impl Niri {
 
             let mut windows = vec![];
             self.layout.with_windows_mut(|mapped, _| {
-                if mapped.recompute_window_rules(window_rules, self.is_at_startup) {
+                if mapped.recompute_window_rules(
+                    window_rules,
+                    self.is_at_startup,
+                    config.prefer_no_csd,
+                ) {
                     windows.push(mapped.window.clone());
                 }
             });

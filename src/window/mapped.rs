@@ -321,7 +321,14 @@ impl Mapped {
     }
 
     /// Recomputes the resolved window rules and returns whether they changed.
-    pub fn recompute_window_rules(&mut self, rules: &[WindowRule], is_at_startup: bool) -> bool {
+    ///
+    /// Also updates the tiled state when they change, since that isn't polled.
+    pub fn recompute_window_rules(
+        &mut self,
+        rules: &[WindowRule],
+        is_at_startup: bool,
+        prefer_no_csd: bool,
+    ) -> bool {
         self.need_to_recompute_rules = false;
 
         let new_rules = ResolvedWindowRules::compute(rules, WindowRef::Mapped(self), is_at_startup);
@@ -336,6 +343,7 @@ impl Mapped {
         }
 
         self.rules = new_rules;
+        self.update_tiled_state(prefer_no_csd);
         true
     }
 
@@ -343,12 +351,13 @@ impl Mapped {
         &mut self,
         rules: &[WindowRule],
         is_at_startup: bool,
+        prefer_no_csd: bool,
     ) -> bool {
         if !self.need_to_recompute_rules {
             return false;
         }
 
-        self.recompute_window_rules(rules, is_at_startup)
+        self.recompute_window_rules(rules, is_at_startup, prefer_no_csd)
     }
 
     pub fn set_needs_configure(&mut self) {
