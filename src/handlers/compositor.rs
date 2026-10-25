@@ -264,6 +264,7 @@ impl CompositorHandler for State {
 
             // This is a commit of a previously-mapped root or a non-toplevel root.
             if let Some((mapped, output)) = self.niri.layout.find_window_and_output(surface) {
+                mapped.set_needs_output_refresh();
                 let window = mapped.window.clone();
                 let output = output.cloned();
 
@@ -380,6 +381,7 @@ impl CompositorHandler for State {
         // This is a commit of a non-root or a non-toplevel root.
         let root_window_output = self.niri.layout.find_window_and_output(&root_surface);
         if let Some((mapped, output)) = root_window_output {
+            mapped.set_needs_output_refresh();
             let window = mapped.window.clone();
             let output = output.cloned();
             window.on_commit();
@@ -394,8 +396,9 @@ impl CompositorHandler for State {
             return;
         }
 
-        // This might be a popup unsync subsurface.
+        // This might be a popup or a popup unsync subsurface.
         if let Some(popup) = self.niri.popups.find_popup(&root_surface) {
+            self.queue_popup_output_refresh(&popup);
             if let Some(output) = self.output_for_popup(&popup) {
                 self.niri.queue_redraw(&output.clone());
             }

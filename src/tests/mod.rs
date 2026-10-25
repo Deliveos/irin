@@ -14,6 +14,7 @@ mod foreign_toplevel;
 mod fullscreen;
 mod ipc;
 mod layer_shell;
+mod output_enter;
 mod pointer_redraws;
 mod remove_output;
 mod screenshot;

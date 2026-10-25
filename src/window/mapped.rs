@@ -63,6 +63,12 @@ pub struct Mapped {
     /// Up-to-date rules.
     rules: ResolvedWindowRules,
 
+    /// Whether the next `refresh()` must send `wl_surface.enter` to the window's surface tree.
+    ///
+    /// Entering and leaving outputs updates the whole tree right away, so this is only needed for
+    /// surfaces that appeared since (subsurfaces and popups), which come with a commit.
+    needs_output_refresh: Cell<bool>,
+
     /// Whether the window rules need to be recomputed.
     ///
     /// This is not used in all cases; for example, app ID and title changes recompute the rules
@@ -290,6 +296,7 @@ impl Mapped {
             credentials,
             pre_commit_hook: hook,
             rules,
+            needs_output_refresh: Cell::new(true),
             need_to_recompute_rules: false,
             needs_configure: false,
             needs_frame_callback: false,
@@ -374,6 +381,13 @@ impl Mapped {
 
     pub fn set_needs_configure(&mut self) {
         self.needs_configure = true;
+    }
+
+    /// Makes the next `refresh()` send `wl_surface.enter` to new subsurfaces and popups.
+    ///
+    /// Call this on commits in the window's surface tree and in its popups.
+    pub fn set_needs_output_refresh(&self) {
+        self.needs_output_refresh.set(true);
     }
 
     pub fn id(&self) -> MappedId {
@@ -1393,7 +1407,10 @@ impl LayoutElement for Mapped {
     }
 
     fn refresh(&self) {
-        self.window.refresh();
+        // This walks the whole surface tree and the popups, so skip it when nothing new appeared.
+        if self.needs_output_refresh.replace(false) {
+            self.window.refresh();
+        }
     }
 
     fn rules(&self) -> &ResolvedWindowRules {

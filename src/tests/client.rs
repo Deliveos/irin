@@ -17,6 +17,8 @@ use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_popup::{self, XdgPopup};
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_positioner::{self, XdgPositioner};
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_surface::{self, XdgSurface};
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_toplevel::{self, XdgToplevel};
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
@@ -38,6 +40,8 @@ use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
+use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
+use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::{Connection, Dispatch, Proxy as _, QueueHandle};
 
@@ -61,6 +65,7 @@ pub struct State {
     pub seats: HashMap<WlSeat, Seat>,
 
     pub compositor: Option<WlCompositor>,
+    pub subcompositor: Option<WlSubcompositor>,
     pub xdg_wm_base: Option<XdgWmBase>,
     pub layer_shell: Option<ZwlrLayerShellV1>,
     pub virtual_pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
@@ -120,7 +125,12 @@ pub struct Seat {
 pub struct Surface {
     pub keyboard_events_received: Vec<KeyboardEvent>,
     pub keyboard_events_looked_at: usize,
+    /// Outputs from `wl_surface.enter` without a matching `wl_surface.leave`.
+    pub entered_outputs: Vec<WlOutput>,
 }
+
+/// User data of a popup's `xdg_surface`, whose configures are acked right away.
+pub struct PopupXdgSurface;
 
 #[derive(Debug)]
 pub struct Keyboard {
@@ -272,6 +282,7 @@ impl Client {
             surfaces: HashMap::new(),
             seats: HashMap::new(),
             compositor: None,
+            subcompositor: None,
             xdg_wm_base: None,
             layer_shell: None,
             virtual_pointer_manager: None,
@@ -352,9 +363,45 @@ impl State {
             Surface {
                 keyboard_events_received: Vec::new(),
                 keyboard_events_looked_at: 0,
+                entered_outputs: Vec::new(),
             },
         );
         surface
+    }
+
+    /// Attaches a 1×1 buffer to the surface, without committing.
+    pub fn attach_pixel_buffer(&self, surface: &WlSurface) {
+        let spbm = self.spbm.as_ref().unwrap();
+        let buffer = spbm.create_u32_rgba_buffer(0, 0, 0, u32::MAX, &self.qh, ());
+        surface.attach(Some(&buffer), 0, 0);
+    }
+
+    /// Creates a synchronized subsurface with a buffer committed; it appears on the parent's next
+    /// commit.
+    pub fn create_subsurface(&mut self, parent: &WlSurface) -> (WlSurface, WlSubsurface) {
+        let surface = self.create_surface();
+        let subcompositor = self.subcompositor.as_ref().unwrap();
+        let subsurface = subcompositor.get_subsurface(&surface, parent, &self.qh, ());
+        self.attach_pixel_buffer(&surface);
+        surface.commit();
+        (surface, subsurface)
+    }
+
+    /// Creates a popup inside the parent's top-left corner and sends its initial commit; it maps
+    /// when committed with a buffer after the configure.
+    pub fn create_popup(&mut self, parent: &XdgSurface) -> (WlSurface, XdgSurface, XdgPopup) {
+        let surface = self.create_surface();
+        let xdg_wm_base = self.xdg_wm_base.as_ref().unwrap();
+        let positioner = xdg_wm_base.create_positioner(&self.qh, ());
+        positioner.set_size(10, 10);
+        positioner.set_anchor_rect(10, 10, 1, 1);
+        positioner.set_anchor(xdg_positioner::Anchor::BottomRight);
+        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &self.qh, PopupXdgSurface);
+        let popup = xdg_surface.get_popup(Some(parent), &positioner, &self.qh, ());
+        positioner.destroy();
+        surface.commit();
+        (surface, xdg_surface, popup)
     }
 
     pub fn create_window(&mut self) -> &mut Window {
@@ -659,6 +706,9 @@ impl Dispatch<WlRegistry, ()> for State {
                     let version = min(version, WlOutput::interface().version);
                     let output = registry.bind(name, version, qh, ());
                     state.outputs.insert(output, String::new());
+                } else if interface == WlSubcompositor::interface().name {
+                    let version = min(version, WlSubcompositor::interface().version);
+                    state.subcompositor = Some(registry.bind(name, version, qh, ()));
                 } else if interface == WlSeat::interface().name {
                     let version = min(version, WlSeat::interface().version);
                     state
@@ -857,20 +907,31 @@ impl Dispatch<ZwlrLayerShellV1, ()> for State {
 }
 
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerManagerV1);
+wayland_client::delegate_noop!(State: ignore WlSubcompositor);
+wayland_client::delegate_noop!(State: ignore WlSubsurface);
+wayland_client::delegate_noop!(State: ignore XdgPositioner);
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerV1);
 
 impl Dispatch<WlSurface, ()> for State {
     fn event(
-        _state: &mut Self,
-        _proxy: &WlSurface,
+        state: &mut Self,
+        surface: &WlSurface,
         event: <WlSurface as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
         match event {
-            wl_surface::Event::Enter { .. } => (),
-            wl_surface::Event::Leave { .. } => (),
+            wl_surface::Event::Enter { output } => {
+                if let Some(surface) = state.surfaces.get_mut(surface) {
+                    surface.entered_outputs.push(output);
+                }
+            }
+            wl_surface::Event::Leave { output } => {
+                if let Some(surface) = state.surfaces.get_mut(surface) {
+                    surface.entered_outputs.retain(|o| *o != output);
+                }
+            }
             wl_surface::Event::PreferredBufferScale { .. } => (),
             wl_surface::Event::PreferredBufferTransform { .. } => (),
             _ => unreachable!(),
@@ -1056,6 +1117,40 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
         match event {
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Active => (),
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => (),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, PopupXdgSurface> for State {
+    fn event(
+        _state: &mut Self,
+        xdg_surface: &XdgSurface,
+        event: <XdgSurface as wayland_client::Proxy>::Event,
+        _data: &PopupXdgSurface,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_surface::Event::Configure { serial } => xdg_surface.ack_configure(serial),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<XdgPopup, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _popup: &XdgPopup,
+        event: <XdgPopup as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_popup::Event::Configure { .. } => (),
+            xdg_popup::Event::PopupDone => (),
+            xdg_popup::Event::Repositioned { .. } => (),
             _ => unreachable!(),
         }
     }
