@@ -11,6 +11,7 @@ mod crash_regressions;
 mod floating;
 mod fullscreen;
 mod layer_shell;
+mod pointer_redraws;
 mod remove_output;
 mod transactions;
 mod virtual_pointer;

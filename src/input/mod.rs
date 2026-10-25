@@ -2725,8 +2725,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        self.niri.queue_redraw_pointer_moved(pos, new_pos);
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_motion_absolute<I: InputBackend>(
@@ -2748,7 +2748,6 @@ impl State {
         let serial = SERIAL_COUNTER.next_serial();
 
         let pointer = self.niri.seat.get_pointer().unwrap();
-        let old_pos = pointer.current_location();
 
         if let Some(output) = self.niri.screenshot_ui.selection_output() {
             let geom = self.niri.global_space.output_geometry(output).unwrap();
@@ -2823,8 +2822,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        self.niri.queue_redraw_pointer_moved(old_pos, pos);
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {

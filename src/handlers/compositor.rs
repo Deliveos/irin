@@ -430,8 +430,8 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            // Changes in size or position are handled in refresh_pointer_redraws().
+            self.niri.queue_redraw_cursor_outputs();
             return;
         }
 
@@ -454,8 +454,8 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            // Changes in size or position are handled in refresh_pointer_redraws().
+            self.niri.queue_redraw_cursor_outputs();
             return;
         }
 

@@ -141,6 +141,7 @@ use crate::handlers::image_copy_capture::{
 };
 use crate::handlers::virtual_keyboard::VirtualKeyboardKeymap;
 use crate::handlers::{configure_lock_surface, XDG_ACTIVATION_TOKEN_TIMEOUT};
+use crate::input::click_grab::ClickGrab;
 use crate::input::pick_color_grab::PickColorGrab;
 use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
@@ -508,6 +509,9 @@ pub struct OutputState {
     pub on_demand_vrr_enabled: bool,
     // After the last redraw, some ongoing animations still remain.
     pub unfinished_animations_remain: bool,
+    /// Part of the cursor and DnD icon shown on this output, in global logical coordinates, as of
+    /// the last `refresh_pointer_redraws()`.
+    pub cursor_rect: Option<Rectangle<f64, Logical>>,
     /// Last sequence received in a vblank event.
     pub last_drm_sequence: Option<u32>,
     pub vblank_throttle: VBlankThrottle,
@@ -870,6 +874,7 @@ impl State {
 
         self.niri.cursor_manager.check_cursor_image_surface_alive();
         self.niri.refresh_pointer_outputs();
+        self.niri.refresh_pointer_redraws();
         self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
@@ -3167,6 +3172,7 @@ impl Niri {
             redraw_state: RedrawState::Idle,
             on_demand_vrr_enabled: false,
             unfinished_animations_remain: false,
+            cursor_rect: None,
             frame_clock: FrameClock::new(refresh_interval, vrr),
             last_drm_sequence: None,
             vblank_throttle: VBlankThrottle::new(self.event_loop.clone(), name.connector.clone()),
@@ -3965,43 +3971,81 @@ impl Niri {
         state.lock_surface.as_ref().map(|s| s.wl_surface()).cloned()
     }
 
-    /// Schedules redraws after the pointer moved from `old` to `new`.
-    pub fn queue_redraw_pointer_moved(
-        &mut self,
-        old: Point<f64, Logical>,
-        new: Point<f64, Logical>,
-    ) {
-        // These react to motion anywhere, so keep redrawing everything for them.
-        if self.screenshot_ui.is_open()
+    /// Schedules redraws for UI that reacts to pointer motion anywhere.
+    ///
+    /// The cursor itself is redrawn by `refresh_pointer_redraws()`.
+    pub fn queue_redraw_pointer_moved(&mut self) {
+        let pointer = self.seat.get_pointer().unwrap();
+        // ClickGrab has no visuals of its own, and it's active during every button press.
+        let has_grab = pointer
+            .with_grab(|_, grab| !grab.as_any().is::<ClickGrab<State>>())
+            .unwrap_or(false);
+
+        if has_grab
+            || self.screenshot_ui.is_open()
             || self.window_mru_ui.is_open()
             || self.dnd_icon.is_some()
-            || self.seat.get_pointer().unwrap().is_grabbed()
         {
             self.queue_redraw_all();
-            return;
         }
+    }
 
-        // shortcut: assumes the cursor image stays within MARGIN logical px of the pointer; a
-        // larger client cursor surface can leave a stale copy on a neighboring output until that
-        // output redraws for another reason. Use the real cursor bbox if this shows up.
-        const MARGIN: f64 = 256.;
-        let near = |geo: Rectangle<f64, Logical>, pos: Point<f64, Logical>| {
-            geo.loc.x - MARGIN <= pos.x
-                && pos.x < geo.loc.x + geo.size.w + MARGIN
-                && geo.loc.y - MARGIN <= pos.y
-                && pos.y < geo.loc.y + geo.size.h + MARGIN
-        };
-        let outputs: Vec<_> = self
-            .global_space
-            .outputs()
-            .filter(|output| {
-                let geo = self.global_space.output_geometry(output).unwrap().to_f64();
-                near(geo, old) || near(geo, new)
-            })
-            .cloned()
-            .collect();
-        for output in outputs {
-            self.queue_redraw(&output);
+    /// Schedules redraws on outputs where the cursor or DnD icon appeared, moved or disappeared
+    /// since the last call.
+    pub fn refresh_pointer_redraws(&mut self) {
+        let _span = tracy_client::span!("Niri::refresh_pointer_redraws");
+
+        // Check whether we need to draw the tablet cursor or the regular cursor.
+        let pointer_pos = self
+            .tablet_cursor_location
+            .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+        let is_visible = self.pointer_visibility.is_visible();
+        let dnd_bbox = self
+            .dnd_icon
+            .as_ref()
+            .map(|icon| bbox_from_surface_tree(&icon.surface, icon.offset).to_f64());
+
+        for (output, state) in &mut self.output_state {
+            let Some(geo) = self.global_space.output_geometry(output) else {
+                continue;
+            };
+
+            let rect = if is_visible {
+                let scale = output.current_scale();
+                let cursor_bbox = self
+                    .cursor_manager
+                    .current_cursor_bbox(scale.integer_scale());
+                let bbox = match (cursor_bbox, dnd_bbox) {
+                    (Some(a), Some(b)) => Some(a.merge(b)),
+                    (a, b) => a.or(b),
+                };
+                bbox.and_then(|mut bbox| {
+                    // Rendering rounds positions and sizes to physical pixels, so pad by a pixel.
+                    let pad = 1. / scale.fractional_scale().min(1.);
+                    bbox.loc += pointer_pos - Point::from((pad, pad));
+                    bbox.size += Size::from((pad * 2., pad * 2.));
+                    bbox.intersection(geo.to_f64())
+                })
+            } else {
+                None
+            };
+
+            if state.cursor_rect != rect {
+                state.cursor_rect = rect;
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
+        }
+    }
+
+    /// Schedules an immediate redraw on outputs that show the cursor or DnD icon.
+    ///
+    /// Use this when their contents change. Changes in size or position are handled by
+    /// `refresh_pointer_redraws()`.
+    pub fn queue_redraw_cursor_outputs(&mut self) {
+        for state in self.output_state.values_mut() {
+            if state.cursor_rect.is_some() {
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
         }
     }
 
