@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::time::Duration;
@@ -33,8 +32,9 @@ pub struct Screencasting {
 
     pub pw_to_niri: calloop::channel::Sender<PwToNiri>,
 
-    /// Screencast output for each mapped window.
-    pub mapped_cast_output: HashMap<Window, Output>,
+    /// Screencast output for each mapped window, with the refresh generation that last saw it.
+    pub mapped_cast_output: HashMap<Window, (Output, u64)>,
+    mapped_cast_generation: u64,
 
     /// Window ID for the "dynamic cast" special window for the xdp-gnome picker.
     pub dynamic_cast_id_for_portal: MappedId,
@@ -69,6 +69,7 @@ impl Screencasting {
             pending_dynamic_casts: vec![],
             pw_to_niri,
             mapped_cast_output: HashMap::new(),
+            mapped_cast_generation: 0,
             dynamic_cast_id_for_portal: MappedId::next(),
             pipewire: None,
         }
@@ -182,7 +183,13 @@ impl State {
 
             // Use the cached output since it will be present even if the output was
             // currently disconnected.
-            let Some(output) = self.niri.casting.mapped_cast_output.get(&mapped.window) else {
+            let Some(output) = self
+                .niri
+                .casting
+                .mapped_cast_output
+                .get(&mapped.window)
+                .map(|(o, _)| o)
+            else {
                 break;
             };
 
@@ -273,7 +280,13 @@ impl State {
             CastTarget::Window { id } => {
                 let mut windows = self.niri.layout.windows();
                 if let Some((_, mapped)) = windows.find(|(_, mapped)| mapped.id().get() == *id) {
-                    if let Some(output) = self.niri.casting.mapped_cast_output.get(&mapped.window) {
+                    if let Some(output) = self
+                        .niri
+                        .casting
+                        .mapped_cast_output
+                        .get(&mapped.window)
+                        .map(|(o, _)| o)
+                    {
                         refresh = Some(output.current_mode().unwrap().refresh as u32);
                     }
                 }
@@ -484,33 +497,34 @@ impl Niri {
     }
 
     pub fn refresh_mapped_cast_outputs(&mut self) {
-        let mut seen = HashSet::new();
         let mut output_changed = vec![];
+
+        // Runs every event-loop iteration: mark entries with a generation instead of building a
+        // set, and don't clone windows unless they're new.
+        self.casting.mapped_cast_generation += 1;
+        let generation = self.casting.mapped_cast_generation;
 
         // Not with_windows(): that also builds IPC layouts, which we don't need.
         for (mon, mapped) in self.layout.windows() {
-            seen.insert(mapped.window.clone());
+            let output = mon.map(|mon| mon.output());
 
-            let Some(output) = mon.map(|mon| mon.output()) else {
-                continue;
-            };
-
-            match self.casting.mapped_cast_output.entry(mapped.window.clone()) {
-                Entry::Occupied(mut entry) => {
-                    if entry.get() != output {
-                        entry.insert(output.clone());
-                        output_changed.push((mapped.id(), output.clone()));
-                    }
+            if let Some((cached, seen)) = self.casting.mapped_cast_output.get_mut(&mapped.window) {
+                *seen = generation;
+                // Without an output, keep the cached one: casts use it while disconnected.
+                if let Some(output) = output.filter(|output| *output != cached) {
+                    *cached = output.clone();
+                    output_changed.push((mapped.id(), output.clone()));
                 }
-                Entry::Vacant(entry) => {
-                    entry.insert(output.clone());
-                }
+            } else if let Some(output) = output {
+                self.casting
+                    .mapped_cast_output
+                    .insert(mapped.window.clone(), (output.clone(), generation));
             }
         }
 
         self.casting
             .mapped_cast_output
-            .retain(|win, _| seen.contains(win));
+            .retain(|_, (_, seen)| *seen == generation);
 
         let mut to_stop = vec![];
         for (id, out) in output_changed {
@@ -780,7 +794,11 @@ impl Niri {
             .layout
             .windows()
             .find(|(_, m)| m.id().get() == window_id)?;
-        let output = self.casting.mapped_cast_output.get(&mapped.window)?;
+        let output = self
+            .casting
+            .mapped_cast_output
+            .get(&mapped.window)
+            .map(|(o, _)| o)?;
         let scale = Scale::from(output.current_scale().fractional_scale());
         let bbox = mapped
             .window
