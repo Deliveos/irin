@@ -141,6 +141,7 @@ use crate::handlers::image_copy_capture::{
 };
 use crate::handlers::virtual_keyboard::VirtualKeyboardKeymap;
 use crate::handlers::{configure_lock_surface, XDG_ACTIVATION_TOKEN_TIMEOUT};
+use crate::input::click_grab::ClickGrab;
 use crate::input::pick_color_grab::PickColorGrab;
 use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
@@ -509,6 +510,9 @@ pub struct OutputState {
     pub on_demand_vrr_enabled: bool,
     // After the last redraw, some ongoing animations still remain.
     pub unfinished_animations_remain: bool,
+    /// Area of the cursor and DnD icon if any of it is shown on this output, in global logical
+    /// coordinates, as of the last `refresh_pointer_redraws()`.
+    pub cursor_rect: Option<Rectangle<f64, Logical>>,
     /// Last sequence received in a vblank event.
     pub last_drm_sequence: Option<u32>,
     pub vblank_throttle: VBlankThrottle,
@@ -874,6 +878,8 @@ impl State {
         self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
+        // After refresh_pointer_contents(), which can change the cursor image and visibility.
+        self.niri.refresh_pointer_redraws();
         foreign_toplevel::refresh(self);
         ext_workspace::refresh(self);
         self.refresh_image_copy_capture();
@@ -3173,6 +3179,7 @@ impl Niri {
             redraw_state: RedrawState::Idle,
             on_demand_vrr_enabled: false,
             unfinished_animations_remain: false,
+            cursor_rect: None,
             frame_clock: FrameClock::new(refresh_interval, vrr),
             last_drm_sequence: None,
             vblank_throttle: VBlankThrottle::new(self.event_loop.clone(), name.connector.clone()),
@@ -3969,6 +3976,95 @@ impl Niri {
 
         let state = self.output_state.get(output)?;
         state.lock_surface.as_ref().map(|s| s.wl_surface()).cloned()
+    }
+
+    /// Schedules redraws for UI that reacts to pointer motion anywhere.
+    ///
+    /// The cursor itself is redrawn by `refresh_pointer_redraws()`.
+    pub fn queue_redraw_pointer_moved(&mut self) {
+        let pointer = self.seat.get_pointer().unwrap();
+        // ClickGrab has no visuals of its own, and it's active during every button press.
+        let has_grab = pointer
+            .with_grab(|_, grab| !grab.as_any().is::<ClickGrab<State>>())
+            .unwrap_or(false);
+
+        if has_grab
+            || self.screenshot_ui.is_open()
+            || self.window_mru_ui.is_open()
+            || self.dnd_icon.is_some()
+        {
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Schedules redraws on outputs where the cursor or DnD icon appeared, moved or disappeared
+    /// since the last call.
+    pub fn refresh_pointer_redraws(&mut self) {
+        let _span = tracy_client::span!("Niri::refresh_pointer_redraws");
+
+        // Check whether we need to draw the tablet cursor or the regular cursor.
+        let pointer_pos = self
+            .tablet_cursor_location
+            .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+        let is_visible = self.pointer_visibility.is_visible();
+        let dnd_bbox = self
+            .dnd_icon
+            .as_ref()
+            .map(|icon| bbox_from_surface_tree(&icon.surface, icon.offset).to_f64());
+
+        // Outputs usually share a scale, so don't recompute the cursor bbox for each of them.
+        let mut last_cursor_bbox = None;
+
+        for (output, state) in &mut self.output_state {
+            let Some(geo) = self.global_space.output_geometry(output) else {
+                continue;
+            };
+
+            let rect = if is_visible {
+                let scale = output.current_scale();
+                let integer_scale = scale.integer_scale();
+                let cursor_bbox = match last_cursor_bbox {
+                    Some((last_scale, bbox)) if last_scale == integer_scale => bbox,
+                    _ => {
+                        let bbox = self.cursor_manager.current_cursor_bbox(integer_scale);
+                        last_cursor_bbox = Some((integer_scale, bbox));
+                        bbox
+                    }
+                };
+                let bbox = match (cursor_bbox, dnd_bbox) {
+                    (Some(a), Some(b)) => Some(a.merge(b)),
+                    (a, b) => a.or(b),
+                };
+                bbox.and_then(|mut bbox| {
+                    // Rendering rounds positions and sizes to physical pixels, so pad by a pixel.
+                    let pad = 1. / scale.fractional_scale().min(1.);
+                    bbox.loc += pointer_pos - Point::from((pad, pad));
+                    bbox.size += Size::from((pad * 2., pad * 2.));
+                    // Keep the whole bbox rather than the part on this output: a cursor wider than
+                    // the output can move without changing that part.
+                    bbox.overlaps(geo.to_f64()).then_some(bbox)
+                })
+            } else {
+                None
+            };
+
+            if state.cursor_rect != rect {
+                state.cursor_rect = rect;
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
+        }
+    }
+
+    /// Schedules an immediate redraw on outputs that show the cursor or DnD icon.
+    ///
+    /// Use this when their contents change. Changes in size or position are handled by
+    /// `refresh_pointer_redraws()`.
+    pub fn queue_redraw_cursor_outputs(&mut self) {
+        for state in self.output_state.values_mut() {
+            if state.cursor_rect.is_some() {
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
+        }
     }
 
     /// Schedules an immediate redraw on all outputs if one is not already scheduled.
@@ -4918,10 +5014,12 @@ impl Niri {
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
-            // Also keep redrawing if the current cursor is animated.
-            state.unfinished_animations_remain |= self
-                .cursor_manager
-                .is_current_cursor_animated(output.current_scale().integer_scale());
+            // Also keep redrawing if the current cursor is animated, but only where it's shown.
+            if !state.unfinished_animations_remain && state.cursor_rect.is_some() {
+                state.unfinished_animations_remain = self
+                    .cursor_manager
+                    .is_current_cursor_animated(output.current_scale().integer_scale());
+            }
 
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {
@@ -7024,6 +7122,8 @@ impl Niri {
         if let Some(output) = &new_focus.output {
             if current_focus.output.as_ref() != Some(output) {
                 self.layout.focus_output(output);
+                // Pointer motion only redraws outputs near the cursor.
+                self.queue_redraw_all();
             }
         }
 
@@ -7053,12 +7153,15 @@ impl Niri {
 
                 self.layout.activate_window_without_raising(window);
                 self.layer_shell_on_demand_focus = None;
+                // The previously focused window may be on another output.
+                self.queue_redraw_all();
             }
         }
 
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+                self.queue_redraw_all();
             }
         }
     }

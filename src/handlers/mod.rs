@@ -102,8 +102,8 @@ impl SeatHandler for State {
             image = CursorImageStatus::Named(CursorIcon::Crosshair);
         }
         self.niri.cursor_manager.set_cursor_image(image);
-        // FIXME: more granular
-        self.niri.queue_redraw_all();
+        // Changes in size or position are handled in refresh_pointer_redraws().
+        self.niri.queue_redraw_cursor_outputs();
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {

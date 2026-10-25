@@ -2701,6 +2701,8 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                // The overview animates on every output.
+                self.niri.queue_redraw_all();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
@@ -2723,9 +2725,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        // FIXME: redraw only outputs overlapping the cursor.
-        self.niri.queue_redraw_all();
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_motion_absolute<I: InputBackend>(
@@ -2792,6 +2793,8 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                // The overview animates on every output.
+                self.niri.queue_redraw_all();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
@@ -2819,9 +2822,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        // FIXME: redraw only outputs overlapping the cursor.
-        self.niri.queue_redraw_all();
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
