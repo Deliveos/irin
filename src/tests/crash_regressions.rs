@@ -209,9 +209,48 @@ fn name_first_workspace_on_unfocused_monitor() {
     f.niri_complete_animations();
 }
 
+/// Writes `data` to an IPC client socket while dispatching niri. Returns what niri replied, up to
+/// the first full line, and whether it closed the connection.
+fn ipc_exchange(
+    f: &mut Fixture,
+    client: &mut std::os::unix::net::UnixStream,
+    mut data: &[u8],
+) -> (Vec<u8>, bool) {
+    use std::io::{ErrorKind, Read as _, Write as _};
+
+    let mut reply = Vec::new();
+    let mut closed = false;
+    for _ in 0..10_000 {
+        if !data.is_empty() {
+            let len = data.len().min(64 * 1024);
+            match client.write(&data[..len]) {
+                Ok(n) => data = &data[n..],
+                Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+                // niri closed the connection; still read what it sent before that.
+                Err(_) => {
+                    closed = true;
+                    data = &[];
+                }
+            }
+        }
+        f.state.server.dispatch();
+
+        let mut buf = [0; 4096];
+        match client.read(&mut buf) {
+            Ok(0) => return (reply, true),
+            Ok(n) => reply.extend_from_slice(&buf[..n]),
+            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
+            Err(_) => return (reply, true),
+        }
+        if data.is_empty() && reply.ends_with(b"\n") {
+            return (reply, closed);
+        }
+    }
+    panic!("no reply from niri");
+}
+
 #[test]
 fn ipc_request_size_is_bounded() {
-    use std::io::{ErrorKind, Read as _, Write as _};
     use std::os::unix::net::UnixStream;
 
     let mut f = Fixture::new();
@@ -219,55 +258,29 @@ fn ipc_request_size_is_bounded() {
     client.set_nonblocking(true).unwrap();
     crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
 
-    // A normal request still gets its reply.
-    client.write_all(b"\"Version\"\n").unwrap();
-    let mut reply = Vec::new();
-    for _ in 0..100 {
-        f.state.server.dispatch();
-        let mut buf = [0; 256];
-        match client.read(&mut buf) {
-            Ok(n) => reply.extend_from_slice(&buf[..n]),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
-            Err(err) => panic!("error reading reply: {err:?}"),
-        }
-        if reply.ends_with(b"\n") {
-            break;
-        }
-    }
-    assert!(reply.starts_with(b"{\"Ok\":{\"Version\""), "{reply:?}");
+    let version_reply = |reply: &[u8]| reply.starts_with(br#"{"Ok":{"Version""#);
 
-    // A request that never ends, like `cat /dev/zero` into the socket. niri must drop the client
-    // rather than buffer all of it.
-    let chunk = [b'a'; 64 * 1024];
-    let mut sent = 0;
-    let mut dropped = false;
-    for _ in 0..1000 {
-        if sent >= 8 << 20 {
-            break;
-        }
-        match client.write(&chunk) {
-            Ok(n) => sent += n,
-            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
-            Err(_) => {
-                dropped = true;
-                break;
-            }
-        }
-        f.state.server.dispatch();
+    // A normal request gets its reply.
+    let (reply, closed) = ipc_exchange(&mut f, &mut client, b"\"Version\"\n");
+    assert!(version_reply(&reply) && !closed, "{reply:?}");
 
-        // Closing with our data still unread shows up as EOF or as a reset.
-        let mut buf = [0; 64];
-        match client.read(&mut buf) {
-            Err(err) if err.kind() == ErrorKind::WouldBlock => (),
-            Ok(n @ 1..) => panic!("unexpected {n}-byte reply"),
-            Ok(0) | Err(_) => {
-                dropped = true;
-                break;
-            }
-        }
-    }
+    // So does a valid request over 1 MiB, like a spawn with a long argv.
+    let mut request = vec![b' '; 2 << 20];
+    request.extend_from_slice(b"\"Version\"\n");
+    let (reply, closed) = ipc_exchange(&mut f, &mut client, &request);
     assert!(
-        dropped,
-        "IPC client still connected after sending {sent} bytes"
+        version_reply(&reply) && !closed,
+        "{:?}",
+        String::from_utf8_lossy(&reply)
+    );
+
+    // A request that never ends, like `cat /dev/zero` into the socket. niri must tell the client
+    // and drop it rather than buffer all of it.
+    let (reply, closed) = ipc_exchange(&mut f, &mut client, &vec![b'a'; 16 << 20]);
+    assert!(closed, "IPC client still connected after a 16 MiB request");
+    let reply = String::from_utf8_lossy(&reply);
+    assert!(
+        reply.starts_with(r#"{"Err":"request is longer than"#),
+        "{reply}"
     );
 }
