@@ -1,6 +1,6 @@
 [Desktop Entry]
-Name=Niri
+Name=Nori
 Comment=A scrollable-tiling Wayland compositor
-Exec=niri-session
+Exec=nori-session
 Type=Application
-DesktopNames=niri
+DesktopNames=nori

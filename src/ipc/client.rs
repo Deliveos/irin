@@ -67,12 +67,12 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
     }
 
     let is_event_stream = matches!(request, Request::EventStream);
-    let mut socket = Socket::connect().context("error connecting to the niri socket")?;
+    let mut socket = Socket::connect().context("error connecting to the nori socket")?;
 
     let result = socket.send(request);
 
     // For errors that can be caused by a version mismatch between the running niri instance and
-    // the niri msg CLI, we will try to fetch and compare the versions.
+    // the nori msg CLI, we will try to fetch and compare the versions.
     let check_compositor_version = match &result {
         Err(err) => {
             // Response JSON parsing errors.
@@ -105,16 +105,16 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         Some(Ok(Response::Version(compositor_version))) => {
             let cli_version = version();
             if cli_version != compositor_version {
-                eprintln!("Running niri compositor has a different version from the niri CLI:");
+                eprintln!("Running nori compositor has a different version from the nori CLI:");
                 eprintln!("Compositor version: {compositor_version}");
                 eprintln!("CLI version:        {cli_version}");
-                eprintln!("Did you forget to restart niri after an update?");
+                eprintln!("Did you forget to restart nori after an update?");
                 eprintln!();
             }
         }
         Some(_) => {
-            eprintln!("Unable to get the running niri compositor version.");
-            eprintln!("Did you forget to restart niri after an update?");
+            eprintln!("Unable to get the running nori compositor version.");
+            eprintln!("Did you forget to restart nori after an update?");
             eprintln!();
         }
         None => {
@@ -123,8 +123,8 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         }
     }
 
-    let reply = result.context("error communicating with niri")?;
-    let response = reply.map_err(|err_msg| anyhow!(err_msg).context("niri returned an error"))?;
+    let reply = result.context("error communicating with nori")?;
+    let response = reply.map_err(|err_msg| anyhow!(err_msg).context("nori returned an error"))?;
 
     match msg {
         Msg::RequestError => {
@@ -149,8 +149,8 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             }
 
             if cli_version != compositor_version {
-                eprintln!("Running niri compositor has a different version from the niri CLI.");
-                eprintln!("Did you forget to restart niri after an update?");
+                eprintln!("Running nori compositor has a different version from the nori CLI.");
+                eprintln!("Did you forget to restart nori after an update?");
                 eprintln!();
             }
 
@@ -435,7 +435,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
 
             let mut read_event = socket.read_events();
             loop {
-                let event = read_event().context("error reading event from niri")?;
+                let event = read_event().context("error reading event from nori")?;
 
                 if json {
                     let event = serde_json::to_string(&event).context("error formatting event")?;
@@ -576,7 +576,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             if is_event_stream {
                 let mut read_event = socket.read_events();
                 loop {
-                    let event = read_event().context("error reading event from niri")?;
+                    let event = read_event().context("error reading event from nori")?;
                     let event = serde_json::to_string(&event).context("error formatting event")?;
                     println!("{event}");
                 }

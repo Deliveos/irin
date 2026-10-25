@@ -28,4 +28,4 @@
 - [ ] New config options are documented in `docs/wiki/` with `<sup>Since: next release</sup>` and added to the config parsing test.
 - [ ] New layout operations are added to `Op` in `src/layout/tests.rs`.
 
-<!-- Guidelines: https://github.com/Deliveos/irin/blob/main/CONTRIBUTING.md and AGENTS.md -->
+<!-- Guidelines: https://github.com/Deliveos/nori/blob/main/CONTRIBUTING.md and AGENTS.md -->

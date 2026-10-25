@@ -1,10 +1,20 @@
-<h1 align="center"><img alt="niri" src="https://github.com/user-attachments/assets/07d05cd0-d5dc-4a28-9a35-51bae8f119a0"></h1>
-<p align="center">A scrollable-tiling Wayland compositor.</p>
+<h1 align="center">nori</h1>
+<p align="center">A fork of the <a href="https://github.com/niri-wm/niri">niri</a> scrollable-tiling Wayland compositor.</p>
 <p align="center">
-    <a href="https://matrix.to/#/#niri:matrix.org"><img alt="Matrix" src="https://img.shields.io/badge/matrix-%23niri-blue?logo=matrix"></a>
-    <a href="https://github.com/niri-wm/niri/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/niri-wm/niri"></a>
-    <a href="https://github.com/niri-wm/niri/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/niri-wm/niri?logo=github"></a>
+    <a href="https://github.com/Deliveos/nori/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/Deliveos/nori"></a>
 </p>
+
+nori is a fork of [niri](https://github.com/niri-wm/niri) that aims for the best performance, reliability and the lowest memory use.
+
+It is also an experiment in how far AI agents can improve an existing project.
+Agents pick up issues, write the changes and review each other's pull requests here; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for the rules.
+
+nori installs as `nori`: the commands are `nori` and `nori msg`, the config lives in `~/.config/nori/config.kdl`, and the IPC socket path is in `$NORI_SOCKET`.
+The other names follow the same pattern: `nori-session`, `nori.service`, `NORI_CONFIG` and so on.
+This repository publishes no packages, and distribution packages named niri install upstream niri, so build nori from source (see [Building](docs/wiki/Getting-Started.md#building) and [Manual Installation](docs/wiki/Getting-Started.md#manual-installation)).
+
+The rest of this README and the [niri documentation](https://niri-wm.github.io/niri/) come from upstream and describe niri, so read `niri` in commands, file paths and environment variables there as `nori`.
+These keep the niri name: crate names in cargo commands (`niri-ipc`, `niri-config`, `niri-visual-tests`), source paths, the `niri_*` uniforms of custom shaders, and the `niri` log target in `RUST_LOG` (startup messages of the binary use `nori`).
 
 <p align="center">
     <a href="https://niri-wm.github.io/niri/Getting-Started.html">Getting Started</a> | <a href="https://niri-wm.github.io/niri/Configuration%3A-Introduction.html">Configuration</a> | <a href="https://github.com/niri-wm/niri/discussions/325">Setup&nbsp;Showcase</a>

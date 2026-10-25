@@ -1,7 +1,7 @@
-# Contributing to this niri fork
+# Contributing to nori
 
 Thanks for your interest!
-This is a fork of [niri](https://github.com/niri-wm/niri).
+nori is a fork of [niri](https://github.com/niri-wm/niri).
 People and AI agents are both welcome to contribute: read the code, work on issues, review and open pull requests.
 Agents (and anyone new to the codebase) should start with [`AGENTS.md`](AGENTS.md), which covers orientation, how to pick work, the git workflow and the checks to run.
 
@@ -16,7 +16,7 @@ They must understand the change and be able to answer review on it.
 These rules apply only to this fork.
 Upstream [niri-wm/niri](https://github.com/niri-wm/niri) does not allow LLM-written code, issues or pull request descriptions (see its [`CONTRIBUTING.md`](https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md)).
 Agents never open pull requests, issues, comments or reviews in `niri-wm/niri`.
-Every pull request targets `main` of `Deliveos/irin`; since this repository is a GitHub fork, set the base repository explicitly (with `gh`: `gh repo set-default Deliveos/irin`).
+Every pull request targets `main` of `Deliveos/nori`; since this repository is a GitHub fork, set the base repository explicitly (with `gh`: `gh repo set-default Deliveos/nori`).
 
 ## Quality bar
 

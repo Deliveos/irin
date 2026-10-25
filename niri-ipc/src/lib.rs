@@ -23,7 +23,7 @@
 //! it is a fairly simple helper, so if you need async, or if you're using a different language,
 //! you are encouraged to communicate with the socket manually.
 //!
-//! 1. Read the socket filesystem path from [`socket::SOCKET_PATH_ENV`] (`$NIRI_SOCKET`).
+//! 1. Read the socket filesystem path from [`socket::SOCKET_PATH_ENV`] (`$NORI_SOCKET`).
 //! 2. Connect to the socket and write a JSON-formatted [`Request`] on a single line. You can follow
 //!    up with a line break and a flush, or just flush and shutdown the write end of the socket.
 //! 3. Niri will respond with a single line JSON-formatted [`Reply`].
@@ -192,7 +192,7 @@ pub struct PickedColor {
 #[cfg_attr(feature = "clap", command(subcommand_help_heading = "Actions"))]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Action {
-    /// Exit niri.
+    /// Exit nori.
     Quit {
         /// Skip the "Press Enter to confirm" prompt.
         #[serde(default)]
@@ -951,7 +951,7 @@ pub enum Action {
     /// Reload the config file.
     ///
     /// Can be useful for scripts changing the config file, to avoid waiting the small duration for
-    /// niri's config file watcher to notice the changes.
+    /// nori's config file watcher to notice the changes.
     LoadConfigFile {
         /// Path of a new config file to load.
         ///
@@ -1040,7 +1040,7 @@ pub enum OutputAction {
     Mode {
         /// Mode to set, or "auto" for automatic selection.
         ///
-        /// Run `niri msg outputs` to see the available modes.
+        /// Run `nori msg outputs` to see the available modes.
         #[cfg_attr(feature = "clap", arg())]
         mode: ModeToSet,
     },
@@ -1467,7 +1467,7 @@ pub struct Workspace {
     pub id: u64,
     /// Index of the workspace on its monitor.
     ///
-    /// This is the same index you can use for requests like `niri msg action focus-workspace`.
+    /// This is the same index you can use for requests like `nori msg action focus-workspace`.
     ///
     /// This index *will change* as you move and re-order workspace. It is merely the workspace's
     /// current position on its monitor. Workspaces on different monitors can have the same index.

@@ -322,7 +322,7 @@ impl Niri {
 
         let tree = TreeInfo {
             root: ID_ROOT,
-            toolkit_name: Some(String::from("niri")),
+            toolkit_name: Some(String::from("nori")),
             toolkit_version: None,
         };
 

@@ -439,7 +439,7 @@ impl Tty {
         let _span = tracy_client::span!("Tty::new");
 
         let (session, notifier) = LibSeatSession::new().context(
-            "Error creating a session. This might mean that you're trying to run niri on a TTY \
+            "Error creating a session. This might mean that you're trying to run nori on a TTY \
              that is already busy, for example if you're running this inside tmux that had been \
              originally started on a different TTY",
         )?;
