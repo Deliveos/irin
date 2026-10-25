@@ -9,6 +9,7 @@ mod animations;
 mod binds;
 mod crash_regressions;
 mod floating;
+mod foreign_toplevel;
 mod fullscreen;
 mod ipc;
 mod layer_shell;
