@@ -12,6 +12,7 @@ mod floating;
 mod fullscreen;
 mod ipc;
 mod layer_shell;
+mod output_enter;
 mod pointer_redraws;
 mod remove_output;
 mod tiled_state;

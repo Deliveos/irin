@@ -1281,6 +1281,16 @@ impl State {
         }
     }
 
+    /// Makes the window that owns the popup send `wl_surface.enter` to the popup's surfaces.
+    pub fn queue_popup_output_refresh(&self, popup: &PopupKind) {
+        let Ok(root) = find_popup_root_surface(popup) else {
+            return;
+        };
+        if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&root) {
+            mapped.set_needs_output_refresh();
+        }
+    }
+
     pub fn output_for_popup(&self, popup: &PopupKind) -> Option<&Output> {
         let root = find_popup_root_surface(popup).ok()?;
         self.niri.output_for_root(&root)
