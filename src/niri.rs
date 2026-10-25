@@ -4997,18 +4997,10 @@ impl Niri {
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated, but only where it's shown.
-            if !state.unfinished_animations_remain && self.pointer_visibility.is_visible() {
-                let pointer_pos = self
-                    .tablet_cursor_location
-                    .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
-                let has_pointer = self
-                    .global_space
-                    .output_geometry(output)
-                    .is_some_and(|geo| geo.to_f64().contains(pointer_pos));
-                state.unfinished_animations_remain = has_pointer
-                    && self
-                        .cursor_manager
-                        .is_current_cursor_animated(output.current_scale().integer_scale());
+            if !state.unfinished_animations_remain && state.cursor_rect.is_some() {
+                state.unfinished_animations_remain = self
+                    .cursor_manager
+                    .is_current_cursor_animated(output.current_scale().integer_scale());
             }
 
             // Also check layer surfaces.
