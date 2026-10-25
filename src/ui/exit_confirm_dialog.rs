@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -9,6 +10,7 @@ use pangocairo::cairo::{self, ImageSurface};
 use pangocairo::pango::{Alignment, FontDescription};
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::gles::GlesTexture;
 use smithay::output::Output;
 use smithay::reexports::gbm::Format as Fourcc;
 use smithay::utils::{Point, Transform};
@@ -31,6 +33,8 @@ const BACKDROP_COLOR: [f32; 4] = [0., 0., 0., 0.4];
 pub struct ExitConfirmDialog {
     state: State,
     buffers: RefCell<HashMap<NotNan<f64>, Option<MemoryBuffer>>>,
+    /// GPU uploads of `buffers`, kept while the dialog is shown so we don't re-upload per frame.
+    textures: RefCell<HashMap<NotNan<f64>, TextureBuffer<GlesTexture>>>,
 
     clock: Clock,
     config: Rc<RefCell<Config>>,
@@ -67,6 +71,7 @@ impl ExitConfirmDialog {
         Self {
             state: State::Hidden,
             buffers: RefCell::new(HashMap::from([(NotNan::new(1.).unwrap(), buffer)])),
+            textures: RefCell::new(HashMap::new()),
             clock,
             config,
         }
@@ -137,6 +142,7 @@ impl ExitConfirmDialog {
             State::Hiding(anim) => {
                 if anim.is_clamped_done() {
                     self.state = State::Hidden;
+                    self.textures.get_mut().clear();
                 }
             }
         }
@@ -171,15 +177,22 @@ impl ExitConfirmDialog {
             return;
         };
 
-        let buffer = buffers
-            .entry(NotNan::new(scale).unwrap())
-            .or_insert_with(|| render(scale).ok());
+        let key = NotNan::new(scale).unwrap();
+        let buffer = buffers.entry(key).or_insert_with(|| render(scale).ok());
         let buffer = buffer.as_ref().unwrap_or(&fallback);
 
         let size = buffer.logical_size();
-        let Ok(buffer) = TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), buffer)
-        else {
-            return;
+        let mut textures = self.textures.borrow_mut();
+        let buffer = match textures.entry(key) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let Ok(texture) =
+                    TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), buffer)
+                else {
+                    return;
+                };
+                entry.insert(texture).clone()
+            }
         };
 
         let location = (output_size.to_point() - size.to_point()).downscale(2.);
