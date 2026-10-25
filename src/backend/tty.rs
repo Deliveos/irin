@@ -2300,6 +2300,10 @@ impl Tty {
         let _span = tracy_client::span!("Tty::set_output_on_demand_vrr");
 
         let output_state = niri.output_state.get_mut(output).unwrap();
+        // This runs every frame; if enabling failed, don't retry until the request changes.
+        if output_state.on_demand_vrr_enabled == enable_vrr {
+            return;
+        }
         output_state.on_demand_vrr_enabled = enable_vrr;
         if output_state.frame_clock.vrr() == enable_vrr {
             return;
