@@ -985,7 +985,12 @@ impl LayoutElement for Mapped {
     }
 
     fn output_enter(&self, output: &Output) {
-        let overlap = Rectangle::from_size(Size::from((i32::MAX, i32::MAX)));
+        // Centered on the window, so that it also covers popups above or left of it. Smithay's
+        // math on the overlap saturates, so the huge size can't overflow.
+        let overlap = Rectangle::new(
+            Point::from((-(1 << 30), -(1 << 30))),
+            Size::from((i32::MAX, i32::MAX)),
+        );
         self.window.output_enter(output, overlap)
     }
 

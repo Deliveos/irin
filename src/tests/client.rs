@@ -387,16 +387,20 @@ impl State {
         (surface, subsurface)
     }
 
-    /// Creates a popup inside the parent's top-left corner and sends its initial commit; it maps
-    /// when committed with a buffer after the configure.
-    pub fn create_popup(&mut self, parent: &XdgSurface) -> (WlSurface, XdgSurface, XdgPopup) {
+    /// Creates a 10×10 popup at the parent's top-left corner, placed towards `gravity`, and sends
+    /// its initial commit; it maps when committed with a buffer after the configure.
+    pub fn create_popup(
+        &mut self,
+        parent: &XdgSurface,
+        gravity: xdg_positioner::Gravity,
+    ) -> (WlSurface, XdgSurface, XdgPopup) {
         let surface = self.create_surface();
         let xdg_wm_base = self.xdg_wm_base.as_ref().unwrap();
         let positioner = xdg_wm_base.create_positioner(&self.qh, ());
         positioner.set_size(10, 10);
-        positioner.set_anchor_rect(10, 10, 1, 1);
-        positioner.set_anchor(xdg_positioner::Anchor::BottomRight);
-        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+        positioner.set_anchor_rect(0, 0, 1, 1);
+        positioner.set_anchor(xdg_positioner::Anchor::TopLeft);
+        positioner.set_gravity(gravity);
         let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &self.qh, PopupXdgSurface);
         let popup = xdg_surface.get_popup(Some(parent), &positioner, &self.qh, ());
         positioner.destroy();

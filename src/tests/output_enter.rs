@@ -1,4 +1,5 @@
 use client::ClientId;
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_positioner::Gravity;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
@@ -47,7 +48,23 @@ fn new_subsurfaces_and_popups_enter_the_output() {
 
     // A popup, which maps with its own commit.
     let xdg_surface = f.client(id).window(&surface).xdg_surface.clone();
-    let (popup, _, _) = f.client(id).state.create_popup(&xdg_surface);
+    let (popup, _, _) = f
+        .client(id)
+        .state
+        .create_popup(&xdg_surface, Gravity::BottomRight);
+    f.roundtrip(id);
+    f.client(id).state.attach_pixel_buffer(&popup);
+    popup.commit();
+    f.double_roundtrip(id);
+    assert_eq!(entered_outputs(&mut f, id, &popup), 1);
+
+    f.double_roundtrip(id);
+
+    // A popup entirely above and left of the window.
+    let (popup, _, _) = f
+        .client(id)
+        .state
+        .create_popup(&xdg_surface, Gravity::TopLeft);
     f.roundtrip(id);
     f.client(id).state.attach_pixel_buffer(&popup);
     popup.commit();
