@@ -8,9 +8,10 @@ use std::rc::Rc;
 use anyhow::{anyhow, Context};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::desktop::utils::bbox_from_surface_tree;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{IsAlive, Logical, Physical, Point, Transform};
+use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Size, Transform};
 use smithay::wayland::compositor::with_states;
 use xcursor::parser::{parse_xcursor, Image};
 use xcursor::CursorTheme;
@@ -91,6 +92,30 @@ impl CursorManager {
                 scale,
                 cursor: self.get_default_cursor(scale),
             })
+    }
+
+    /// Returns the area that the current cursor covers at `scale`, relative to the pointer.
+    ///
+    /// For an animated cursor, this covers every frame. Returns `None` if the cursor is hidden.
+    pub fn current_cursor_bbox(&self, scale: i32) -> Option<Rectangle<f64, Logical>> {
+        match self.get_render_cursor(scale) {
+            RenderCursor::Hidden => None,
+            RenderCursor::Surface { hotspot, surface } => {
+                Some(bbox_from_surface_tree(&surface, hotspot.upscale(-1)).to_f64())
+            }
+            RenderCursor::Named { scale, cursor, .. } => cursor
+                .frames()
+                .iter()
+                .map(|frame| {
+                    let hotspot = XCursor::hotspot(frame).to_logical(scale).to_f64();
+                    let size = Size::from((
+                        f64::from(frame.width) / f64::from(scale),
+                        f64::from(frame.height) / f64::from(scale),
+                    ));
+                    Rectangle::new(hotspot.upscale(-1.), size)
+                })
+                .reduce(|a, b| a.merge(b)),
+        }
     }
 
     pub fn is_current_cursor_animated(&self, scale: i32) -> bool {

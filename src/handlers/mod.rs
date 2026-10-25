@@ -8,6 +8,7 @@ mod xdg_shell;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -101,8 +102,8 @@ impl SeatHandler for State {
             image = CursorImageStatus::Named(CursorIcon::Crosshair);
         }
         self.niri.cursor_manager.set_cursor_image(image);
-        // FIXME: more granular
-        self.niri.queue_redraw_all();
+        // Changes in size or position are handled in refresh_pointer_redraws().
+        self.niri.queue_redraw_cursor_outputs();
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
@@ -297,16 +298,36 @@ impl SelectionHandler for State {
     ) {
         let _span = tracy_client::span!("send_selection");
 
+        // Each writer blocks until the client reads, so a client that never reads would pile up
+        // threads without a limit.
+        //
+        // shortcut: the cap is global, so a client holding 16 unread pipes blocks pastes of our
+        // selection for everyone; upgrade to non-blocking writes from the event loop if it matters.
+        static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        const MAX_IN_FLIGHT: usize = 16;
+        if IN_FLIGHT.fetch_add(1, Ordering::Relaxed) >= MAX_IN_FLIGHT {
+            IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            warn!("too many pending selection writes, dropping request");
+            return;
+        }
+
         let buf = user_data.clone();
-        thread::spawn(move || {
-            // Clear O_NONBLOCK, otherwise File::write_all() will stop halfway.
-            if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
-                warn!("error clearing flags on selection target fd: {err:?}");
-            }
-            if let Err(err) = File::from(fd).write_all(&buf) {
-                warn!("error writing selection: {err:?}");
-            }
-        });
+        let res = thread::Builder::new()
+            .name("Selection Writer".to_owned())
+            .spawn(move || {
+                // Clear O_NONBLOCK, otherwise File::write_all() will stop halfway.
+                if let Err(err) = fcntl_setfl(&fd, OFlags::empty()) {
+                    warn!("error clearing flags on selection target fd: {err:?}");
+                }
+                if let Err(err) = File::from(fd).write_all(&buf) {
+                    warn!("error writing selection: {err:?}");
+                }
+                IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            });
+        if let Err(err) = res {
+            IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+            warn!("error spawning a thread to write selection: {err:?}");
+        }
     }
 }
 
@@ -609,6 +630,11 @@ impl ExtWorkspaceHandler for State {
     }
 
     fn assign_workspace(&mut self, ws_id: WorkspaceId, output: Output) {
+        // The pending action holds a weak output that still upgrades shortly after removal.
+        if !self.niri.output_exists(&output) {
+            return;
+        }
+
         let reference = niri_config::WorkspaceReference::Id(ws_id.get());
         if let Some((old_output, old_idx)) = self.niri.find_output_and_workspace_index(reference) {
             self.niri
@@ -824,7 +850,17 @@ impl OutputManagementHandler for State {
     }
 
     fn apply_output_config(&mut self, config: niri_config::Outputs) {
-        self.niri.config.borrow_mut().outputs = config;
+        // The request only covers connected outputs; keep config for the others.
+        {
+            let outputs = &mut self.niri.config.borrow_mut().outputs.0;
+            outputs.retain(|old| {
+                !config
+                    .0
+                    .iter()
+                    .any(|new| new.name.eq_ignore_ascii_case(&old.name))
+            });
+            outputs.extend(config.0);
+        }
         self.reload_output_config();
     }
 }

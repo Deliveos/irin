@@ -4048,3 +4048,65 @@ proptest! {
         check_ops_with_options(options, ops);
     }
 }
+
+#[test]
+fn insert_position_with_overshooting_workspace_switch() {
+    let config = Config::parse_mem(
+        "animations {
+    workspace-switch {
+        spring damping-ratio=0.2 stiffness=800 epsilon=0.0001
+    }
+}
+",
+    )
+    .unwrap();
+    let mut layout = Layout::new(Clock::with_time(Duration::ZERO), &config);
+
+    let setup = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::FocusWorkspace(0),
+        Op::CompleteAnimations,
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 100.,
+            py: 100.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: 400.,
+            py: 100.,
+        },
+    ];
+    check_ops_on_layout(&mut layout, setup);
+    let n = layout.workspaces().count();
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspace(n - 1)]);
+    for ms in [40i32, 40, 40] {
+        check_ops_on_layout(&mut layout, [Op::AdvanceAnimations { msec_delta: ms }]);
+        check_ops_on_layout(
+            &mut layout,
+            [Op::InteractiveMoveUpdate {
+                window: 1,
+                dx: 1.,
+                dy: 0.,
+                output_idx: 1,
+                px: 401.,
+                py: 100.,
+            }],
+        );
+    }
+}

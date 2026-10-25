@@ -35,6 +35,8 @@ pub struct ForeignToplevelManagerState {
     ext_list_instances: HashSet<ExtForeignToplevelListV1>,
     wlr_management_instances: HashSet<ZwlrForeignToplevelManagerV1>,
     toplevels: HashMap<WlSurface, ToplevelData>,
+    /// Bumped every refresh; toplevels not marked with the current value were closed.
+    generation: u64,
 }
 
 pub trait ForeignToplevelHandler {
@@ -56,6 +58,8 @@ struct ToplevelData {
 
     ext_list_instances: HashSet<ExtForeignToplevelHandleV1>,
     wlr_management_instances: HashMap<ZwlrForeignToplevelHandleV1, Vec<WlOutput>>,
+    /// Generation of the last refresh that saw this toplevel.
+    seen: u64,
     // FIXME: parent.
 }
 
@@ -86,6 +90,7 @@ impl ForeignToplevelManagerState {
             ext_list_instances: HashSet::new(),
             wlr_management_instances: HashSet::new(),
             toplevels: HashMap::new(),
+            generation: 0,
         }
     }
 }
@@ -94,32 +99,22 @@ pub fn refresh(state: &mut State) {
     let _span = tracy_client::span!("foreign_toplevel::refresh");
 
     let protocol_state = &mut state.niri.foreign_toplevel_state;
-
-    // Handle closed windows.
-    protocol_state.toplevels.retain(|surface, data| {
-        if state.niri.layout.find_window_and_output(surface).is_some() {
-            return true;
-        }
-
-        for instance in data.ext_list_instances.iter() {
-            instance.closed();
-        }
-
-        for instance in data.wlr_management_instances.keys() {
-            instance.closed();
-        }
-
-        false
-    });
+    protocol_state.generation += 1;
+    let generation = protocol_state.generation;
 
     // Handle new and existing windows.
     //
     // Save the focused window for last, this way when the focus changes, we will first deactivate
     // the previous window and only then activate the newly focused window.
     let mut focused = None;
-    state.niri.layout.with_windows(|mapped, output, _, _| {
+    for (mon, mapped) in state.niri.layout.windows() {
+        let output = mon.map(|mon| mon.output());
         let toplevel = mapped.toplevel();
         let wl_surface = toplevel.wl_surface();
+        // Mark it as alive even if we skip refreshing it below.
+        if let Some(data) = protocol_state.toplevels.get_mut(wl_surface) {
+            data.seen = generation;
+        }
         with_toplevel_role_and_current(toplevel, |role, cur| {
             let Some(cur) = cur else {
                 error!("mapped must have had initial commit");
@@ -140,6 +135,24 @@ pub fn refresh(state: &mut State) {
                 );
             }
         });
+    }
+
+    // Handle closed windows. Do this before activating the focused window, so that clients see
+    // the old window close before the new one activates.
+    protocol_state.toplevels.retain(|_, data| {
+        if data.seen == generation {
+            return true;
+        }
+
+        for instance in data.ext_list_instances.iter() {
+            instance.closed();
+        }
+
+        for instance in data.wlr_management_instances.keys() {
+            instance.closed();
+        }
+
+        false
     });
 
     // Finally, refresh the focused window.
@@ -297,6 +310,7 @@ fn refresh_toplevel(
                 output: output.cloned(),
                 ext_list_instances: HashSet::new(),
                 wlr_management_instances: HashMap::new(),
+                seen: protocol_state.generation,
             };
 
             for manager in &protocol_state.ext_list_instances {

@@ -99,6 +99,24 @@ pub fn region_to_non_overlapping_rects(
 
     output.clear();
 
+    // The algorithm below is O(N³) with O(N²) output, and clients control N.
+    //
+    // shortcut: past the limit we use the bounding box of the added rects, which over-covers
+    // regions with holes; replace with a sweep-line if clients legitimately send more rects.
+    const MAX_RECTS: usize = 64;
+    if region.rects.len() > MAX_RECTS {
+        let points = region
+            .rects
+            .iter()
+            .filter(|(kind, r)| matches!(kind, RectangleKind::Add) && !r.is_empty())
+            .flat_map(|(_, r)| [r.loc, r.loc + r.size.to_point()]);
+        let bbox = Rectangle::bounding_box(points);
+        if !bbox.is_empty() {
+            output.push(bbox);
+        }
+        return;
+    }
+
     // Collect all unique Y coordinates.
     let ys = BTreeSet::from_iter(
         region
@@ -301,6 +319,27 @@ mod tests {
         let mut output = Vec::new();
         region_to_non_overlapping_rects(&region, &mut output);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_many_rects_use_bounding_box() {
+        // Staircase that makes the exact algorithm blow up (16M output rects for 4000 inputs).
+        let n = 4000;
+        let region = RegionAttributes {
+            rects: (0..n)
+                .map(|i| {
+                    let rect = Rectangle::new(Point::new(2 * (n - i), i), Size::new(1, 2 * n));
+                    (RectangleKind::Add, rect)
+                })
+                .collect(),
+        };
+
+        let mut output = Vec::new();
+        region_to_non_overlapping_rects(&region, &mut output);
+        assert_eq!(
+            output,
+            [Rectangle::from_extremities((2, 0), (2 * n + 1, 3 * n - 1))]
+        );
     }
 
     proptest! {

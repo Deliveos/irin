@@ -16,8 +16,6 @@ use crate::utils::{CastSessionId, CastStreamId};
 pub struct ScreenCast {
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
     to_niri: calloop::channel::Sender<ScreenCastToNiri>,
-    #[allow(clippy::type_complexity)]
-    sessions: Arc<Mutex<Vec<(Session, InterfaceRef<Session>)>>>,
 }
 
 #[derive(Clone)]
@@ -121,11 +119,8 @@ impl ScreenCast {
         let path = OwnedObjectPath::try_from(path).unwrap();
 
         let session = Session::new(session_id, self.ipc_outputs.clone(), self.to_niri.clone());
-        match server.at(&path, session.clone()).await {
-            Ok(true) => {
-                let iface = server.interface(&path).await.unwrap();
-                self.sessions.lock().unwrap().push((session, iface));
-            }
+        match server.at(&path, session).await {
+            Ok(true) => (),
             Ok(false) => return Err(fdo::Error::Failed("session path already exists".to_owned())),
             Err(err) => {
                 return Err(fdo::Error::Failed(format!(
@@ -312,7 +307,6 @@ impl ScreenCast {
         Self {
             ipc_outputs,
             to_niri,
-            sessions: Arc::new(Mutex::new(vec![])),
         }
     }
 }

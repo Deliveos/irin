@@ -122,6 +122,14 @@ impl Backend {
         }
     }
 
+    pub fn is_session_active(&self) -> bool {
+        match self {
+            Backend::Tty(tty) => tty.is_session_active(),
+            Backend::Winit(_) => true,
+            Backend::Headless(_) => true,
+        }
+    }
+
     pub fn change_vt(&mut self, vt: i32) {
         match self {
             Backend::Tty(tty) => tty.change_vt(vt),

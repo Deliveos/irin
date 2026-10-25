@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::os::unix::fs::FileExt;
 
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols_wlr;
@@ -160,11 +160,13 @@ where
                 // Start with a u16 slice so it's aligned correctly.
                 let mut gamma = vec![0u16; self.gamma_size as usize * 3];
                 let buf = bytemuck::cast_slice_mut(&mut gamma);
-                let mut file = File::from(fd);
+                let file = File::from(fd);
                 {
                     let _span = tracy_client::span!("read gamma from fd");
 
-                    if let Err(err) = file.read_exact(buf) {
+                    // pread fails on pipes instead of blocking the compositor on a client that
+                    // never writes, and doesn't depend on the client's file offset.
+                    if let Err(err) = file.read_exact_at(buf, 0) {
                         warn!("failed to read gamma data: {err:?}");
                         resource.failed();
                         gamma_controls.remove(&output);
@@ -174,7 +176,7 @@ where
 
                     // Verify that there's no more data.
                     {
-                        match file.read(&mut [0]) {
+                        match file.read_at(&mut [0], buf.len() as u64) {
                             Ok(0) => (),
                             Ok(_) => {
                                 warn!("gamma data is too large");

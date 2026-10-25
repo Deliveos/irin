@@ -2034,6 +2034,10 @@ impl Tty {
         rv
     }
 
+    pub fn is_session_active(&self) -> bool {
+        self.session.is_active()
+    }
+
     pub fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             warn!("error changing VT: {err}");
@@ -2296,6 +2300,10 @@ impl Tty {
         let _span = tracy_client::span!("Tty::set_output_on_demand_vrr");
 
         let output_state = niri.output_state.get_mut(output).unwrap();
+        // This runs every frame; if enabling failed, don't retry until the request changes.
+        if output_state.on_demand_vrr_enabled == enable_vrr {
+            return;
+        }
         output_state.on_demand_vrr_enabled = enable_vrr;
         if output_state.frame_clock.vrr() == enable_vrr {
             return;
@@ -3273,7 +3281,15 @@ fn pick_mode(
             if let Some(refresh) = target_mode.refresh {
                 let custom_mode =
                     calculate_mode_cvt(target_mode.width, target_mode.height, refresh);
-                return Some((custom_mode, false));
+                // Degenerate sizes (e.g. width 0) give zero timings, which crash later on division.
+                if custom_mode.clock() == 0
+                    || custom_mode.hsync().2 == 0
+                    || custom_mode.vsync().2 == 0
+                {
+                    warn!("ignoring invalid custom mode {target_mode:?}");
+                } else {
+                    return Some((custom_mode, false));
+                }
             } else {
                 warn!("ignoring custom mode without refresh rate");
             }

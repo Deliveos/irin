@@ -196,7 +196,11 @@ impl CompositorHandler for State {
                     let hook = add_mapped_toplevel_pre_commit_hook(toplevel);
                     let mapped = {
                         let config = self.niri.config.borrow();
-                        Mapped::new(window, rules, hook, &config)
+                        let mapped = Mapped::new(window, rules, hook, &config);
+                        // The rules or prefer-no-csd could have changed since the initial
+                        // configure, and the tiled state isn't polled.
+                        mapped.update_tiled_state(config.prefer_no_csd);
+                        mapped
                     };
                     let window = mapped.window.clone();
 
@@ -430,8 +434,8 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            // Changes in size or position are handled in refresh_pointer_redraws().
+            self.niri.queue_redraw_cursor_outputs();
             return;
         }
 
@@ -454,8 +458,8 @@ impl CompositorHandler for State {
                 });
             }
 
-            // FIXME: granular redraws for cursors.
-            self.niri.queue_redraw_all();
+            // Changes in size or position are handled in refresh_pointer_redraws().
+            self.niri.queue_redraw_cursor_outputs();
             return;
         }
 

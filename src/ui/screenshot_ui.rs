@@ -536,8 +536,6 @@ impl ScreenshotUi {
         self.update_buffers();
     }
 
-    pub fn advance_animations(&mut self) {}
-
     pub fn are_animations_ongoing(&self) -> bool {
         let Self::Open { open_anim, .. } = self else {
             return false;

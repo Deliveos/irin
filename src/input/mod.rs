@@ -121,16 +121,8 @@ impl<D: SeatHandler + TabletSeatHandler> AnyStartData<D> {
         }
     }
 
-    pub fn is_pointer(&self) -> bool {
-        matches!(self, Self::Pointer(_))
-    }
-
     pub fn is_touch(&self) -> bool {
         matches!(self, Self::Touch(_))
-    }
-
-    pub fn is_tablet_tool(&self) -> bool {
-        matches!(self, Self::TabletTool(_))
     }
 }
 
@@ -164,11 +156,10 @@ impl State {
             self.niri.reset_pointer_inactivity_timer();
         }
 
-        let hide_hotkey_overlay =
-            self.niri.hotkey_overlay.is_open() && should_hide_hotkey_overlay(&event);
+        let hide_hotkey_overlay = self.niri.hotkey_overlay.is_open() && should_hide_overlay(&event);
 
         let hide_exit_confirm_dialog =
-            self.niri.exit_confirm_dialog.is_open() && should_hide_exit_confirm_dialog(&event);
+            self.niri.exit_confirm_dialog.is_open() && should_hide_overlay(&event);
 
         let mut consumed_by_a11y = false;
         use InputEvent::*;
@@ -2710,6 +2701,8 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                // The overview animates on every output.
+                self.niri.queue_redraw_all();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
@@ -2732,9 +2725,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        // FIXME: redraw only outputs overlapping the cursor.
-        self.niri.queue_redraw_all();
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_motion_absolute<I: InputBackend>(
@@ -2801,6 +2793,8 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                // The overview animates on every output.
+                self.niri.queue_redraw_all();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
@@ -2828,9 +2822,8 @@ impl State {
         #[cfg(feature = "dbus")]
         self.a11y_notify_pointer_motion();
 
-        // Redraw to update the cursor position.
-        // FIXME: redraw only outputs overlapping the cursor.
-        self.niri.queue_redraw_all();
+        // Redraw the UI that follows the pointer. The cursor itself is redrawn on refresh.
+        self.niri.queue_redraw_pointer_moved();
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
@@ -2861,16 +2854,17 @@ impl State {
                 is_mru_open = true;
                 if let Some(MouseButton::Left) = button {
                     let location = pointer.current_location();
-                    let (output, pos_within_output) = self.niri.output_under(location).unwrap();
-                    if mru_output == output {
-                        let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                        if id.is_some() {
-                            self.confirm_mru();
-                        } else {
-                            self.niri.cancel_mru();
+                    // The pointer can be on no output, e.g. after its output was unplugged.
+                    match self.niri.output_under(location) {
+                        Some((output, pos_within_output)) if mru_output == output => {
+                            let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
+                            if id.is_some() {
+                                self.confirm_mru();
+                            } else {
+                                self.niri.cancel_mru();
+                            }
                         }
-                    } else {
-                        self.niri.cancel_mru();
+                        _ => self.niri.cancel_mru(),
                     }
 
                     self.niri.suppressed_buttons.insert(button_code);
@@ -4825,22 +4819,7 @@ fn should_activate_monitors<I: InputBackend>(event: &InputEvent<I>) -> bool {
     }
 }
 
-fn should_hide_hotkey_overlay<I: InputBackend>(event: &InputEvent<I>) -> bool {
-    match event {
-        InputEvent::Keyboard { event } if event.state() == KeyState::Pressed => true,
-        InputEvent::PointerButton { event } if event.state() == ButtonState::Pressed => true,
-        InputEvent::PointerAxis { .. }
-        | InputEvent::GestureSwipeBegin { .. }
-        | InputEvent::GesturePinchBegin { .. }
-        | InputEvent::TouchDown { .. }
-        | InputEvent::TouchMotion { .. }
-        | InputEvent::TabletToolTip { .. }
-        | InputEvent::TabletToolButton { .. } => true,
-        _ => false,
-    }
-}
-
-fn should_hide_exit_confirm_dialog<I: InputBackend>(event: &InputEvent<I>) -> bool {
+fn should_hide_overlay<I: InputBackend>(event: &InputEvent<I>) -> bool {
     match event {
         InputEvent::Keyboard { event } if event.state() == KeyState::Pressed => true,
         InputEvent::PointerButton { event } if event.state() == ButtonState::Pressed => true,

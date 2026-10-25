@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -133,13 +134,14 @@ use crate::dbus::freedesktop_login1::Login1ToNiri;
 #[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_introspect::{self, IntrospectToNiri, NiriToIntrospect};
 #[cfg(feature = "dbus")]
-use crate::dbus::gnome_shell_screenshot::{NiriToScreenshot, ScreenshotToNiri};
+use crate::dbus::gnome_shell_screenshot::ScreenshotToNiri;
 use crate::frame_clock::FrameClock;
 use crate::handlers::image_copy_capture::{
     self as image_copy_capture_impl, CaptureBuffer, ImageCopyCursorSession, ImageCopySession,
 };
 use crate::handlers::virtual_keyboard::VirtualKeyboardKeymap;
 use crate::handlers::{configure_lock_surface, XDG_ACTIVATION_TOKEN_TIMEOUT};
+use crate::input::click_grab::ClickGrab;
 use crate::input::pick_color_grab::PickColorGrab;
 use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
@@ -189,9 +191,9 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
-    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
-    send_scale_transform, winit_scale, write_png_rgba8, xwayland,
+    center, center_f64, create_new_numbered, expand_home, get_monotonic_time,
+    ipc_transform_to_smithay, is_mapped, logical_output, make_screenshot_path, output_matches_name,
+    output_size, panel_orientation, send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -405,6 +407,7 @@ pub struct Niri {
     pub pointer_contents: PointContents,
     pub pointer_visibility: PointerVisibility,
     pub pointer_inactivity_timer: Option<RegistrationToken>,
+    pub pointer_last_activity: Duration,
     /// Whether the pointer inactivity timer got reset this event loop iteration.
     ///
     /// Used for limiting the reset to once per iteration, so that it's not spammed with high
@@ -507,6 +510,9 @@ pub struct OutputState {
     pub on_demand_vrr_enabled: bool,
     // After the last redraw, some ongoing animations still remain.
     pub unfinished_animations_remain: bool,
+    /// Area of the cursor and DnD icon if any of it is shown on this output, in global logical
+    /// coordinates, as of the last `refresh_pointer_redraws()`.
+    pub cursor_rect: Option<Rectangle<f64, Logical>>,
     /// Last sequence received in a vblank event.
     pub last_drm_sequence: Option<u32>,
     pub vblank_throttle: VBlankThrottle,
@@ -860,10 +866,6 @@ impl State {
         self.refresh_popup_grab();
         self.update_keyboard_focus();
 
-        // Should be called before refresh_layout() because that one will refresh other window
-        // states and then send a pending configure.
-        self.niri.refresh_window_states();
-
         // Needs to be called after updating the keyboard focus.
         self.niri.refresh_layout();
 
@@ -872,6 +874,8 @@ impl State {
         self.niri.global_space.refresh();
         self.niri.refresh_idle_inhibit();
         self.refresh_pointer_contents();
+        // After refresh_pointer_contents(), which can change the cursor image and visibility.
+        self.niri.refresh_pointer_redraws();
         foreign_toplevel::refresh(self);
         ext_workspace::refresh(self);
         self.refresh_image_copy_capture();
@@ -1753,6 +1757,12 @@ impl State {
             reload_xkb = true;
         }
 
+        #[cfg(feature = "dbus")]
+        let power_key_handling_changed =
+            config.input.disable_power_key_handling != old_config.input.disable_power_key_handling;
+
+        let prefer_no_csd_changed = config.prefer_no_csd != old_config.prefer_no_csd;
+
         // Reload the repeat info.
         if config.input.keyboard.repeat_rate != old_config.input.keyboard.repeat_rate
             || config.input.keyboard.repeat_delay != old_config.input.keyboard.repeat_delay
@@ -1892,6 +1902,23 @@ impl State {
             self.load_configured_keymap();
         }
 
+        // prefer-no-csd feeds into the tiled state, which isn't polled. Window rule changes update
+        // it in recompute_window_rules() below.
+        if prefer_no_csd_changed {
+            self.niri.refresh_window_states();
+        }
+
+        // The key mapping follows the config, so the logind inhibitor must too, otherwise logind
+        // also acts on the power key (by default powering off).
+        #[cfg(feature = "dbus")]
+        if power_key_handling_changed && self.niri.is_session_instance {
+            if self.niri.config.borrow().input.disable_power_key_handling {
+                self.niri.inhibit_power_key_fd = None;
+            } else if let Err(err) = self.niri.inhibit_power_key() {
+                warn!("error inhibiting power key: {err:?}");
+            }
+        }
+
         if libinput_config_changed {
             let config = self.niri.config.borrow();
             for mut device in self.niri.devices.iter().cloned() {
@@ -1925,6 +1952,9 @@ impl State {
 
         if cursor_inactivity_timeout_changed {
             // Force reset due to timeout change.
+            if let Some(token) = self.niri.pointer_inactivity_timer.take() {
+                self.niri.event_loop.remove(token);
+            }
             self.niri.pointer_inactivity_timer_got_reset = false;
             self.niri.reset_pointer_inactivity_timer();
         }
@@ -2356,14 +2386,13 @@ impl State {
     pub fn set_dynamic_cast_target(&mut self, _target: CastTarget) {}
 
     #[cfg(feature = "dbus")]
-    pub fn on_screen_shot_msg(
-        &mut self,
-        to_screenshot: &async_channel::Sender<NiriToScreenshot>,
-        msg: ScreenshotToNiri,
-    ) {
+    pub fn on_screen_shot_msg(&mut self, msg: ScreenshotToNiri) {
         match msg {
-            ScreenshotToNiri::TakeScreenshot { include_cursor } => {
-                self.handle_take_screenshot(to_screenshot, include_cursor);
+            ScreenshotToNiri::TakeScreenshot {
+                include_cursor,
+                reply,
+            } => {
+                self.handle_take_screenshot(include_cursor, reply);
             }
             ScreenshotToNiri::PickColor(tx) => {
                 self.handle_pick_color(tx);
@@ -2374,42 +2403,26 @@ impl State {
     #[cfg(feature = "dbus")]
     fn handle_take_screenshot(
         &mut self,
-        to_screenshot: &async_channel::Sender<NiriToScreenshot>,
         include_cursor: bool,
+        reply: async_channel::Sender<PathBuf>,
     ) {
         let _span = tracy_client::span!("TakeScreenshot");
 
-        let rv = self.backend.with_primary_renderer(|renderer| {
-            let on_done = {
-                let to_screenshot = to_screenshot.clone();
-                move |path| {
-                    let msg = NiriToScreenshot::ScreenshotResult(Some(path));
-                    if let Err(err) = to_screenshot.send_blocking(msg) {
-                        warn!("error sending path to screenshot: {err:?}");
-                    }
+        // On any failure, `reply` is dropped without sending, and the caller gets an error.
+        self.backend.with_primary_renderer(|renderer| {
+            let on_done = move |path| {
+                if let Err(err) = reply.send_blocking(path) {
+                    warn!("error sending path to screenshot: {err:?}");
                 }
             };
 
             let res = self
                 .niri
                 .screenshot_all_outputs(renderer, include_cursor, on_done);
-
             if let Err(err) = res {
                 warn!("error taking a screenshot: {err:?}");
-
-                let msg = NiriToScreenshot::ScreenshotResult(None);
-                if let Err(err) = to_screenshot.send_blocking(msg) {
-                    warn!("error sending None to screenshot: {err:?}");
-                }
             }
         });
-
-        if rv.is_none() {
-            let msg = NiriToScreenshot::ScreenshotResult(None);
-            if let Err(err) = to_screenshot.send_blocking(msg) {
-                warn!("error sending None to screenshot: {err:?}");
-            }
-        }
     }
 
     #[cfg(feature = "dbus")]
@@ -2705,6 +2718,7 @@ impl Niri {
                 Timer::from_duration(Duration::from_secs(1)),
                 |_, _, state| {
                     state.niri.send_frame_callbacks_on_fallback_timer();
+                    state.niri.release_idle_effect_buffers();
                     TimeoutAction::ToDuration(Duration::from_secs(1))
                 },
             )
@@ -2863,6 +2877,7 @@ impl Niri {
             pointer_contents: PointContents::default(),
             pointer_visibility: PointerVisibility::Visible,
             pointer_inactivity_timer: None,
+            pointer_last_activity: Duration::ZERO,
             pointer_inactivity_timer_got_reset: false,
             notified_activity_this_iteration: false,
             pointer_inside_hot_corner: false,
@@ -3035,8 +3050,15 @@ impl Niri {
 
             let size = output_size(&output).to_i32_round();
 
+            // Clamp so that later position + size math can't overflow i32.
+            const MAX_POS: i32 = 1 << 24;
             let new_position = config
-                .map(|pos| Point::from((pos.x, pos.y)))
+                .map(|pos| {
+                    Point::from((
+                        pos.x.clamp(-MAX_POS, MAX_POS),
+                        pos.y.clamp(-MAX_POS, MAX_POS),
+                    ))
+                })
                 .filter(|pos| {
                     // Ensure that the requested position does not overlap any existing output.
                     let target_geom = Rectangle::new(*pos, size);
@@ -3161,6 +3183,7 @@ impl Niri {
             redraw_state: RedrawState::Idle,
             on_demand_vrr_enabled: false,
             unfinished_animations_remain: false,
+            cursor_rect: None,
             frame_clock: FrameClock::new(refresh_interval, vrr),
             last_drm_sequence: None,
             vblank_throttle: VBlankThrottle::new(self.event_loop.clone(), name.connector.clone()),
@@ -3197,6 +3220,8 @@ impl Niri {
     pub fn remove_output(&mut self, output: &Output) {
         for layer in layer_map_for_output(output).layers() {
             layer.layer_surface().send_close();
+            // layer_destroyed() won't find it once the output is gone.
+            self.mapped_layer_surfaces.remove(layer);
         }
 
         self.layout.remove_output(output);
@@ -3957,6 +3982,95 @@ impl Niri {
         state.lock_surface.as_ref().map(|s| s.wl_surface()).cloned()
     }
 
+    /// Schedules redraws for UI that reacts to pointer motion anywhere.
+    ///
+    /// The cursor itself is redrawn by `refresh_pointer_redraws()`.
+    pub fn queue_redraw_pointer_moved(&mut self) {
+        let pointer = self.seat.get_pointer().unwrap();
+        // ClickGrab has no visuals of its own, and it's active during every button press.
+        let has_grab = pointer
+            .with_grab(|_, grab| !grab.as_any().is::<ClickGrab<State>>())
+            .unwrap_or(false);
+
+        if has_grab
+            || self.screenshot_ui.is_open()
+            || self.window_mru_ui.is_open()
+            || self.dnd_icon.is_some()
+        {
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Schedules redraws on outputs where the cursor or DnD icon appeared, moved or disappeared
+    /// since the last call.
+    pub fn refresh_pointer_redraws(&mut self) {
+        let _span = tracy_client::span!("Niri::refresh_pointer_redraws");
+
+        // Check whether we need to draw the tablet cursor or the regular cursor.
+        let pointer_pos = self
+            .tablet_cursor_location
+            .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
+        let is_visible = self.pointer_visibility.is_visible();
+        let dnd_bbox = self
+            .dnd_icon
+            .as_ref()
+            .map(|icon| bbox_from_surface_tree(&icon.surface, icon.offset).to_f64());
+
+        // Outputs usually share a scale, so don't recompute the cursor bbox for each of them.
+        let mut last_cursor_bbox = None;
+
+        for (output, state) in &mut self.output_state {
+            let Some(geo) = self.global_space.output_geometry(output) else {
+                continue;
+            };
+
+            let rect = if is_visible {
+                let scale = output.current_scale();
+                let integer_scale = scale.integer_scale();
+                let cursor_bbox = match last_cursor_bbox {
+                    Some((last_scale, bbox)) if last_scale == integer_scale => bbox,
+                    _ => {
+                        let bbox = self.cursor_manager.current_cursor_bbox(integer_scale);
+                        last_cursor_bbox = Some((integer_scale, bbox));
+                        bbox
+                    }
+                };
+                let bbox = match (cursor_bbox, dnd_bbox) {
+                    (Some(a), Some(b)) => Some(a.merge(b)),
+                    (a, b) => a.or(b),
+                };
+                bbox.and_then(|mut bbox| {
+                    // Rendering rounds positions and sizes to physical pixels, so pad by a pixel.
+                    let pad = 1. / scale.fractional_scale().min(1.);
+                    bbox.loc += pointer_pos - Point::from((pad, pad));
+                    bbox.size += Size::from((pad * 2., pad * 2.));
+                    // Keep the whole bbox rather than the part on this output: a cursor wider than
+                    // the output can move without changing that part.
+                    bbox.overlaps(geo.to_f64()).then_some(bbox)
+                })
+            } else {
+                None
+            };
+
+            if state.cursor_rect != rect {
+                state.cursor_rect = rect;
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
+        }
+    }
+
+    /// Schedules an immediate redraw on outputs that show the cursor or DnD icon.
+    ///
+    /// Use this when their contents change. Changes in size or position are handled by
+    /// `refresh_pointer_redraws()`.
+    pub fn queue_redraw_cursor_outputs(&mut self) {
+        for state in self.output_state.values_mut() {
+            if state.cursor_rect.is_some() {
+                state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+            }
+        }
+    }
+
     /// Schedules an immediate redraw on all outputs if one is not already scheduled.
     pub fn queue_redraw_all(&mut self) {
         for state in self.output_state.values_mut() {
@@ -4306,6 +4420,10 @@ impl Niri {
         self.idle_notifier_state.set_is_inhibited(is_inhibited);
     }
 
+    /// Recomputes the tiled state of all windows, e.g. after prefer-no-csd changed.
+    ///
+    /// Inputs of the tiled state change rarely, so this isn't polled: decoration handlers, window
+    /// rule changes and mapping update single windows.
     pub fn refresh_window_states(&mut self) {
         let _span = tracy_client::span!("Niri::refresh_window_states");
 
@@ -4314,6 +4432,20 @@ impl Niri {
             mapped.update_tiled_state(config.prefer_no_csd);
         });
         drop(config);
+    }
+
+    /// Recomputes the tiled state of the window with this surface, if any.
+    pub fn update_tiled_state(&self, surface: &WlSurface) {
+        let prefer_no_csd = self.config.borrow().prefer_no_csd;
+        if let Some((mapped, _)) = self.layout.find_window_and_output(surface) {
+            mapped.update_tiled_state(prefer_no_csd);
+        } else if let Some(unmapped) = self.unmapped_windows.get(surface) {
+            // Before the initial configure, it computes the tiled state itself.
+            if let InitialConfigureState::Configured { rules, .. } = &unmapped.state {
+                let toplevel = unmapped.window.toplevel().expect("no X11 support");
+                crate::utils::update_tiled_state(toplevel, prefer_no_csd, rules.tiled_state);
+            }
+        }
     }
 
     pub fn refresh_window_rules(&mut self) {
@@ -4325,21 +4457,22 @@ impl Niri {
         let mut windows = vec![];
         let mut outputs = HashSet::new();
         self.layout.with_windows_mut(|mapped, output| {
-            if mapped.recompute_window_rules_if_needed(window_rules, self.is_at_startup) {
+            if mapped.recompute_window_rules_if_needed(
+                window_rules,
+                self.is_at_startup,
+                config.prefer_no_csd,
+            ) {
                 windows.push(mapped.window.clone());
 
                 if let Some(output) = output {
                     outputs.insert(output.clone());
                 }
-
-                // Since refresh_window_rules() is called after refresh_layout(), we need to update
-                // the tiled state right here, so that it's picked up by the following
-                // send_pending_configure().
-                mapped.update_tiled_state(config.prefer_no_csd);
             }
         });
         drop(config);
 
+        // Since refresh_window_rules() is called after refresh_layout(), send the configure right
+        // here, so that the tiled state from the new rules isn't delayed.
         for win in windows {
             self.layout.update_window(&win, None);
             win.toplevel()
@@ -4357,7 +4490,6 @@ impl Niri {
         self.layout.advance_animations();
         self.config_error_notification.advance_animations();
         self.exit_confirm_dialog.advance_animations();
-        self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
 
         for state in self.output_state.values_mut() {
@@ -4905,10 +5037,12 @@ impl Niri {
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
-            // Also keep redrawing if the current cursor is animated.
-            state.unfinished_animations_remain |= self
-                .cursor_manager
-                .is_current_cursor_animated(output.current_scale().integer_scale());
+            // Also keep redrawing if the current cursor is animated, but only where it's shown.
+            if !state.unfinished_animations_remain && state.cursor_rect.is_some() {
+                state.unfinished_animations_remain = self
+                    .cursor_manager
+                    .is_current_cursor_animated(output.current_scale().integer_scale());
+            }
 
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {
@@ -4951,7 +5085,13 @@ impl Niri {
         // If we're in process of locking the session, check if the requirements were met.
         match mem::take(&mut self.lock_state) {
             LockState::Locking(confirmation) => {
-                if state.lock_render_state == LockRenderState::Unlocked {
+                if state.lock_render_state == LockRenderState::Unlocked
+                    && !backend.is_session_active()
+                {
+                    // We're on another VT and can't render. Keep locking; the redraw on session
+                    // resume will finish the lock before anything is shown.
+                    self.lock_state = LockState::Locking(confirmation);
+                } else if state.lock_render_state == LockRenderState::Unlocked {
                     // We needed to render a locked frame on this output but failed.
                     self.unlock();
                 } else {
@@ -4999,7 +5139,11 @@ impl Niri {
                 // and get rendered for screen cast. This is currently
                 // unimplemented, but happens to work by chance, since output
                 // redrawing is more eager than it should be.
-                self.render_windows_for_screen_cast(renderer, output, target_presentation_time);
+                //
+                // Window casts render the window directly, so they'd bypass the lock screen.
+                if !self.is_locked() {
+                    self.render_windows_for_screen_cast(renderer, output, target_presentation_time);
+                }
             }
 
             self.render_for_screencopy_with_damage(renderer, output);
@@ -5418,6 +5562,17 @@ impl Niri {
                 FRAME_CALLBACK_THROTTLE,
                 should_send,
             );
+        }
+    }
+
+    /// Frees blur/xray buffers that haven't been used for a while; each can be tens of MB.
+    pub fn release_idle_effect_buffers(&mut self) {
+        // Long enough that a static screen doesn't re-render them on every small change.
+        const MAX_IDLE: Duration = Duration::from_secs(10);
+
+        let now = get_monotonic_time();
+        for state in self.output_state.values() {
+            state.xray.release_idle_buffers(now, MAX_IDLE);
         }
     }
 
@@ -6438,8 +6593,15 @@ impl Niri {
                     }
                 }
 
-                match std::fs::write(&path, buf) {
-                    Ok(()) => image_path = Some(path),
+                // Generated names have one-second precision, so don't overwrite those.
+                let res = if create_parent {
+                    create_new_numbered(&path)
+                        .and_then(|(mut file, path)| file.write_all(&buf).map(|()| path))
+                } else {
+                    std::fs::write(&path, &buf).map(|()| path)
+                };
+                match res {
+                    Ok(path) => image_path = Some(path),
                     Err(err) => {
                         warn!("error saving screenshot image: {err:?}");
                     }
@@ -6559,19 +6721,30 @@ impl Niri {
             .context("error mapping texture")?;
         let pixels = copy.to_vec();
 
-        let path = make_screenshot_path(&self.config.borrow())
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                let mut path = env::temp_dir();
-                path.push("screenshot.png");
-                path
-            });
+        let path = make_screenshot_path(&self.config.borrow()).ok().flatten();
         debug!("saving screenshot to {path:?}");
 
         thread::spawn(move || {
-            let file = match std::fs::File::create(&path) {
-                Ok(file) => file,
+            let res = match path {
+                Some(path) => {
+                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        if let Err(err) = std::fs::create_dir_all(parent) {
+                            warn!("error creating screenshot directory: {err:?}");
+                        }
+                    }
+                    create_new_numbered(&path)
+                }
+                None => {
+                    // Not /tmp: that is readable by other users.
+                    let mut path = directories::BaseDirs::new()
+                        .and_then(|d| d.runtime_dir().map(|d| d.to_owned()))
+                        .unwrap_or_else(env::temp_dir);
+                    path.push("screenshot.png");
+                    std::fs::File::create(&path).map(|file| (file, path))
+                }
+            };
+            let (file, path) = match res {
+                Ok(x) => x,
                 Err(err) => {
                     warn!("error creating file: {err:?}");
                     return;
@@ -6691,6 +6864,8 @@ impl Niri {
                 self.cursor_manager
                     .set_cursor_image(CursorImageStatus::default_named());
                 self.cancel_mru();
+                // Otherwise the first key at the lock screen goes to the dialog, and Enter quits.
+                self.exit_confirm_dialog.hide();
 
                 // I don't like this being asynchronous, but it would be a bit involved to move
                 // this whole function to State. This should do for now.
@@ -6970,6 +7145,8 @@ impl Niri {
         if let Some(output) = &new_focus.output {
             if current_focus.output.as_ref() != Some(output) {
                 self.layout.focus_output(output);
+                // Pointer motion only redraws outputs near the cursor.
+                self.queue_redraw_all();
             }
         }
 
@@ -6999,12 +7176,15 @@ impl Niri {
 
                 self.layout.activate_window_without_raising(window);
                 self.layer_shell_on_demand_focus = None;
+                // The previously focused window may be on another output.
+                self.queue_redraw_all();
             }
         }
 
         if let Some(layer) = &new_focus.layer {
             if current_focus.layer.as_ref() != Some(layer) {
                 self.layer_shell_on_demand_focus = Some(layer.clone());
+                self.queue_redraw_all();
             }
         }
     }
@@ -7093,7 +7273,8 @@ impl Niri {
         let _span = tracy_client::span!("Niri::recompute_window_rules");
 
         let changed = {
-            let window_rules = &self.config.borrow().window_rules;
+            let config = self.config.borrow();
+            let window_rules = &config.window_rules;
 
             for unmapped in self.unmapped_windows.values_mut() {
                 let new_rules = ResolvedWindowRules::compute(
@@ -7108,7 +7289,11 @@ impl Niri {
 
             let mut windows = vec![];
             self.layout.with_windows_mut(|mapped, _| {
-                if mapped.recompute_window_rules(window_rules, self.is_at_startup) {
+                if mapped.recompute_window_rules(
+                    window_rules,
+                    self.is_at_startup,
+                    config.prefer_no_csd,
+                ) {
                     windows.push(mapped.window.clone());
                 }
             });
@@ -7151,12 +7336,16 @@ impl Niri {
         if self.pointer_inactivity_timer_got_reset {
             return;
         }
+        self.pointer_inactivity_timer_got_reset = true;
+        self.pointer_last_activity = get_monotonic_time();
+
+        // An existing timer pushes itself back to the last activity when it fires, so motion
+        // doesn't recreate it on every event.
+        if self.pointer_inactivity_timer.is_some() {
+            return;
+        }
 
         let _span = tracy_client::span!("Niri::reset_pointer_inactivity_timer");
-
-        if let Some(token) = self.pointer_inactivity_timer.take() {
-            self.event_loop.remove(token);
-        }
 
         let Some(timeout_ms) = self.config.borrow().cursor.hide_after_inactive_ms else {
             return;
@@ -7167,21 +7356,30 @@ impl Niri {
         let token = self
             .event_loop
             .insert_source(timer, move |_, _, state| {
-                state.niri.pointer_inactivity_timer = None;
+                let niri = &mut state.niri;
+                let timeout = niri.config.borrow().cursor.hide_after_inactive_ms;
+                if let Some(timeout_ms) = timeout {
+                    let deadline =
+                        niri.pointer_last_activity + Duration::from_millis(timeout_ms as u64);
+                    let now = get_monotonic_time();
+                    if now < deadline {
+                        return TimeoutAction::ToDuration(deadline - now);
+                    }
+                }
+
+                niri.pointer_inactivity_timer = None;
 
                 // If the pointer is already invisible, don't reset it back to Hidden causing one
                 // frame of hover.
-                if state.niri.pointer_visibility.is_visible() {
-                    state.niri.pointer_visibility = PointerVisibility::Hidden;
-                    state.niri.queue_redraw_all();
+                if timeout.is_some() && niri.pointer_visibility.is_visible() {
+                    niri.pointer_visibility = PointerVisibility::Hidden;
+                    niri.queue_redraw_all();
                 }
 
                 TimeoutAction::Drop
             })
             .unwrap();
         self.pointer_inactivity_timer = Some(token);
-
-        self.pointer_inactivity_timer_got_reset = true;
     }
 
     pub fn notify_activity(&mut self) {

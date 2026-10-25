@@ -1528,18 +1528,23 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
+        //
+        // The blocked-out contents are only ever shown when the window has block-out-from set.
+        let block_out_from = self.window.rules().block_out_from;
         let mut blocked_out_contents = Vec::new();
-        self.render(
-            RenderCtx {
-                target: RenderTarget::Screencast,
-                renderer,
-                xray: xray.as_deref(),
-            },
-            Point::from((0., 0.)),
-            xray_pos,
-            false,
-            &mut |elem| blocked_out_contents.push(elem),
-        );
+        if block_out_from.is_some() {
+            self.render(
+                RenderCtx {
+                    target: RenderTarget::Screencast,
+                    renderer,
+                    xray: xray.as_deref(),
+                },
+                Point::from((0., 0.)),
+                xray_pos,
+                false,
+                &mut |elem| blocked_out_contents.push(elem),
+            );
+        }
 
         // Put everything back to normal.
         if let Some(xray) = &mut xray {
@@ -1556,7 +1561,7 @@ impl<W: LayoutElement> Tile<W> {
             contents,
             contents_with_blocked_out_bg,
             blocked_out_contents,
-            block_out_from: self.window.rules().block_out_from,
+            block_out_from,
             size: self.animated_tile_size(),
             texture: Default::default(),
             texture_with_blocked_out_bg: Default::default(),

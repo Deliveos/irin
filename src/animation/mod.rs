@@ -30,14 +30,8 @@ pub struct Animation {
 
 #[derive(Debug, Clone, Copy)]
 enum Kind {
-    Easing {
-        curve: Curve,
-    },
+    Easing { curve: Curve },
     Spring(Spring),
-    Deceleration {
-        initial_velocity: f64,
-        deceleration_rate: f64,
-    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,19 +128,6 @@ impl Animation {
                 };
                 Self::spring(self.clock.clone(), spring)
             }
-            Kind::Deceleration {
-                initial_velocity,
-                deceleration_rate,
-            } => {
-                let threshold = 0.001; // FIXME
-                Self::decelerate(
-                    self.clock.clone(),
-                    from,
-                    initial_velocity,
-                    deceleration_rate,
-                    threshold,
-                )
-            }
         }
     }
 
@@ -189,41 +170,6 @@ impl Animation {
             is_off: false,
             duration,
             clamped_duration,
-            start_time: clock.now(),
-            clock,
-            kind,
-        }
-    }
-
-    pub fn decelerate(
-        clock: Clock,
-        from: f64,
-        initial_velocity: f64,
-        deceleration_rate: f64,
-        threshold: f64,
-    ) -> Self {
-        let duration_s = if initial_velocity == 0. {
-            0.
-        } else {
-            let coeff = 1000. * deceleration_rate.ln();
-            (-coeff * threshold / initial_velocity.abs()).ln() / coeff
-        };
-        let duration = Duration::from_secs_f64(duration_s);
-
-        let to = from - initial_velocity / (1000. * deceleration_rate.ln());
-
-        let kind = Kind::Deceleration {
-            initial_velocity,
-            deceleration_rate,
-        };
-
-        Self {
-            from,
-            to,
-            initial_velocity,
-            is_off: false,
-            duration,
-            clamped_duration: duration,
             start_time: clock.now(),
             clock,
             kind,
@@ -282,14 +228,6 @@ impl Animation {
                     value.clamp(b, a)
                 }
             }
-            Kind::Deceleration {
-                initial_velocity,
-                deceleration_rate,
-            } => {
-                let passed = passed.as_secs_f64();
-                let coeff = 1000. * deceleration_rate.ln();
-                self.from + (deceleration_rate.powf(1000. * passed) - 1.) / coeff * initial_velocity
-            }
         }
     }
 
@@ -318,10 +256,6 @@ impl Animation {
 
     pub fn start_time(&self) -> Duration {
         self.start_time
-    }
-
-    pub fn end_time(&self) -> Duration {
-        self.start_time + self.duration
     }
 
     pub fn duration(&self) -> Duration {

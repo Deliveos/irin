@@ -981,6 +981,7 @@ impl XdgDecorationHandler for State {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
         });
+        self.niri.update_tiled_state(toplevel.wl_surface());
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: zxdg_toplevel_decoration_v1::Mode) {
@@ -995,6 +996,7 @@ impl XdgDecorationHandler for State {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(mode);
         });
+        self.niri.update_tiled_state(toplevel.wl_surface());
 
         // A configure is required in response to this event. However, if an initial configure
         // wasn't sent, then we will send this as part of the initial configure later.
@@ -1014,6 +1016,7 @@ impl XdgDecorationHandler for State {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
         });
+        self.niri.update_tiled_state(toplevel.wl_surface());
 
         // A configure is required in response to this event. However, if an initial configure
         // wasn't sent, then we will send this as part of the initial configure later.
@@ -1066,6 +1069,7 @@ impl KdeDecorationHandler for State {
                 .server
                 .set(mode == org_kde_kwin_server_decoration::Mode::Server);
         });
+        self.niri.update_tiled_state(surface);
     }
 }
 
@@ -1448,7 +1452,11 @@ impl State {
             .layout
             .find_window_and_output_mut(toplevel.wl_surface())
         {
-            if mapped.recompute_window_rules(window_rules, self.niri.is_at_startup) {
+            if mapped.recompute_window_rules(
+                window_rules,
+                self.niri.is_at_startup,
+                config.prefer_no_csd,
+            ) {
                 drop(config);
                 let output = output.cloned();
                 let window = mapped.window.clone();
