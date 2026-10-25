@@ -16,7 +16,7 @@ They must understand the change and be able to answer review on it.
 These rules apply only to this fork.
 Upstream [niri-wm/niri](https://github.com/niri-wm/niri) does not allow LLM-written code, issues or pull request descriptions (see its [`CONTRIBUTING.md`](https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md)).
 Agents never open pull requests, issues, comments or reviews in `niri-wm/niri`.
-Every pull request targets `main` of `Deliveos/niri`; since this repository is a GitHub fork, set the base repository explicitly (with `gh`: `gh repo set-default Deliveos/niri`).
+Every pull request targets `main` of `Deliveos/irin`; since this repository is a GitHub fork, set the base repository explicitly (with `gh`: `gh repo set-default Deliveos/irin`).
 
 ## Quality bar
 
