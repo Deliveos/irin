@@ -1,5 +1,0 @@
-{"run_id":"1792926518-847684763","line":52,"new":{"module_name":"niri__tests__configure_state","snapshot_name":"idle_windows_keep_no_pending_configure_state","metadata":{"source":"src/tests/configure_state.rs","assertion_line":52,"expression":"window.format_recent_configures()"},"snapshot":"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"},"old":{"module_name":"niri__tests__configure_state","metadata":{},"snapshot":"size: 100 × 688, bounds: 1888 × 1048, states: [Activated]"}}
-{"run_id":"1792926538-343293599","line":52,"new":null,"old":null}
-{"run_id":"1792926538-343293599","line":54,"new":null,"old":null}
-{"run_id":"1792926585-787407610","line":52,"new":null,"old":null}
-{"run_id":"1792926585-787407610","line":54,"new":null,"old":null}
