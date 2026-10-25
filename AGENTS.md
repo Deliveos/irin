@@ -1,6 +1,6 @@
 # AGENTS.md: guide for AI agents and contributors
 
-This is a fork of [niri](https://github.com/niri-wm/niri), a scrollable-tiling Wayland compositor written in Rust.
+This is nori, a fork of [niri](https://github.com/niri-wm/niri), a scrollable-tiling Wayland compositor written in Rust.
 AI agents are welcome here: you may read all of the code, pick up issues, and open pull requests.
 The same rules apply to people and agents; [`CONTRIBUTING.md`](CONTRIBUTING.md) has the full guidelines.
 Read this file first.
@@ -111,4 +111,4 @@ This fork's rules apply only to this repository.
 Upstream [niri-wm/niri](https://github.com/niri-wm/niri) does not allow LLM-written code, issues or pull request descriptions (see its `CONTRIBUTING.md`).
 
 - Never open pull requests, issues, comments or reviews in `niri-wm/niri`.
-- Every pull request targets `main` of `Deliveos/irin`. This repository is a GitHub fork, so set the base repository explicitly; with `gh`, run `gh repo set-default Deliveos/irin` once per clone.
+- Every pull request targets `main` of `Deliveos/nori`. This repository is a GitHub fork, so set the base repository explicitly; with `gh`, run `gh repo set-default Deliveos/nori` once per clone.

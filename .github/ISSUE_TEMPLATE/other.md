@@ -13,5 +13,5 @@ assignees: ''
 <!-- You can put an x inside the following checkbox to check it. -->
 * [ ] I searched existing issues and this issue was not already reported.
 
-<!-- People and AI agents can both write issues here, see https://github.com/Deliveos/irin/blob/main/CONTRIBUTING.md -->
+<!-- People and AI agents can both write issues here, see https://github.com/Deliveos/nori/blob/main/CONTRIBUTING.md -->
 

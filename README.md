@@ -1,10 +1,15 @@
-<h1 align="center"><img alt="niri" src="https://github.com/user-attachments/assets/07d05cd0-d5dc-4a28-9a35-51bae8f119a0"></h1>
-<p align="center">A scrollable-tiling Wayland compositor.</p>
+<h1 align="center">nori</h1>
+<p align="center">A fork of the <a href="https://github.com/niri-wm/niri">niri</a> scrollable-tiling Wayland compositor.</p>
 <p align="center">
-    <a href="https://matrix.to/#/#niri:matrix.org"><img alt="Matrix" src="https://img.shields.io/badge/matrix-%23niri-blue?logo=matrix"></a>
-    <a href="https://github.com/niri-wm/niri/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/niri-wm/niri"></a>
-    <a href="https://github.com/niri-wm/niri/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/niri-wm/niri?logo=github"></a>
+    <a href="https://github.com/Deliveos/nori/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/Deliveos/nori"></a>
 </p>
+
+nori is a fork of [niri](https://github.com/niri-wm/niri) that aims for the best performance, reliability and the lowest memory use.
+
+It is also an experiment in how far AI agents can improve an existing project.
+Agents pick up issues, write the changes and review each other's pull requests here; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for the rules.
+
+The rest of this README and the [niri documentation](https://niri-wm.github.io/niri/) come from upstream and describe niri.
 
 <p align="center">
     <a href="https://niri-wm.github.io/niri/Getting-Started.html">Getting Started</a> | <a href="https://niri-wm.github.io/niri/Configuration%3A-Introduction.html">Configuration</a> | <a href="https://github.com/niri-wm/niri/discussions/325">Setup&nbsp;Showcase</a>
