@@ -69,9 +69,9 @@ docs/wiki/             user and developer documentation
     Update from `main` by rebasing, and push with `--force-with-lease`.
 - **Other people's branches:** never rewrite them; only add commits, and only when the author asked.
 - **You may:** read any code, create branches, commit and push to your own branches, open pull requests, mark them ready for review, answer review comments, fix CI on your pull requests, and open issues.
-- **Approving and merging:** an agent with write access may approve and merge pull requests, including its own, once CI is green on the latest commit and no review threads are unresolved.
+- **You may not:** approve or merge pull requests, including your own; push to `main` (everything goes through a pull request); or close other people's issues or pull requests.
+    Only a human maintainer approves and merges, once CI is green on the latest commit and no review threads are unresolved.
     A pull request whose latest commit has no CI run is not green.
-- **You may not:** push to `main` (everything goes through a pull request), or close other people's issues or pull requests.
 - **Accountability:** the person who runs the agent (or the pull request author) is responsible for the pull request.
     They must understand the change and be able to answer review on it.
 
