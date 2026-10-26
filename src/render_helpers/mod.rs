@@ -298,10 +298,12 @@ pub fn render_to_vec(
     Ok(copy.to_vec())
 }
 
+/// Renders into the DMA-BUF. `age` is the buffer age for the damage tracker, 0 if unknown.
 pub fn render_to_dmabuf(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
     mut dmabuf: Dmabuf,
+    age: usize,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
 ) -> anyhow::Result<SyncPoint> {
@@ -317,7 +319,7 @@ pub fn render_to_dmabuf(
         .render_output_with_states(
             renderer,
             &mut target,
-            0,
+            age,
             elements,
             Color32F::TRANSPARENT,
             states,
