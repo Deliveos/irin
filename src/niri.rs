@@ -6010,7 +6010,7 @@ impl Niri {
 
             let res = match capture_buffer {
                 CaptureBuffer::Dma(dmabuf) => {
-                    render_to_dmabuf(renderer, &mut s.damage_tracker, dmabuf, elements, states)
+                    render_to_dmabuf(renderer, &mut s.damage_tracker, dmabuf, 0, elements, states)
                         .map(Some)
                 }
                 CaptureBuffer::Shm => render_to_shm(
@@ -6341,9 +6341,15 @@ impl Niri {
     ) -> anyhow::Result<Option<SyncPoint>> {
         let sync = match screencopy.buffer() {
             ScreencopyBuffer::Dmabuf(dmabuf) => {
-                let sync =
-                    render_to_dmabuf(renderer, damage_tracker, dmabuf.clone(), elements, states)
-                        .context("error rendering to screencopy dmabuf")?;
+                let sync = render_to_dmabuf(
+                    renderer,
+                    damage_tracker,
+                    dmabuf.clone(),
+                    0,
+                    elements,
+                    states,
+                )
+                .context("error rendering to screencopy dmabuf")?;
                 Some(sync)
             }
             ScreencopyBuffer::Shm(wl_buffer) => {

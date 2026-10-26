@@ -134,6 +134,10 @@ struct CastInner {
     min_time_between_frames: Duration,
     dmabufs: HashMap<i64, Dmabuf>,
     shmbufs: HashMap<i64, Shmbuf>,
+    /// Frames rendered during this cast; never reset, so that buffer ages can be computed.
+    frames_rendered: u64,
+    /// For each DMA-BUF, the `frames_rendered` value when it was last rendered to.
+    dmabuf_rendered_at: HashMap<i64, u64>,
     /// Buffers dequeued from PipeWire in process of rendering.
     ///
     /// This is an ordered list of buffers that we started rendering to and waiting for the
@@ -171,10 +175,40 @@ enum CastState {
         alpha: bool,
         dma_negotiation: Option<DmaNegotiation>,
         // Lazily-initialized to keep the initialization to a single place.
-        damage_tracker: Option<OutputDamageTracker>,
+        damage_trackers: Option<DamageTrackers>,
         cursor_damage_tracker: Option<OutputDamageTracker>,
         last_cursor_location: Option<Point<i32, Physical>>,
     },
+}
+
+#[derive(Debug)]
+struct DamageTrackers {
+    /// Tells whether anything changed since the last frame, before a buffer is dequeued.
+    check: OutputDamageTracker,
+    /// Renders into the buffers. Separate from `check` so that its history has exactly one entry
+    /// per rendered frame, which is what buffer ages count.
+    render: OutputDamageTracker,
+    /// `CastInner::frames_rendered` when `render` was created.
+    since: u64,
+}
+
+impl DamageTrackers {
+    fn new(size: Size<i32, Physical>, scale: Scale<f64>, since: u64) -> Self {
+        Self {
+            check: OutputDamageTracker::new(size, scale, Transform::Normal),
+            render: OutputDamageTracker::new(size, scale, Transform::Normal),
+            since,
+        }
+    }
+
+    /// Age of a buffer last rendered to at `rendered_at`, for rendering frame `frame`.
+    ///
+    /// 0, meaning a full redraw, unless `render` drew the buffer's current contents.
+    fn buffer_age(&self, rendered_at: Option<u64>, frame: u64) -> usize {
+        rendered_at
+            .filter(|&at| self.since <= at && at < frame)
+            .map_or(0, |at| usize::try_from(frame - at).unwrap_or(0))
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -476,6 +510,8 @@ impl PipeWire {
             min_time_between_frames: Duration::ZERO,
             dmabufs: HashMap::new(),
             shmbufs: HashMap::new(),
+            frames_rendered: 0,
+            dmabuf_rendered_at: HashMap::new(),
             rendering_buffers: Vec::new(),
             last_no_buffer_warning: None,
             skipped_frames: 0,
@@ -722,14 +758,14 @@ impl PipeWire {
                                     let alpha = *alpha;
                                     let dma_negotiation = *dma_negotiation;
 
-                                    let (damage_tracker, cursor_damage_tracker) =
+                                    let (damage_trackers, cursor_damage_tracker) =
                                         if let CastState::Ready {
-                                            damage_tracker,
+                                            damage_trackers,
                                             cursor_damage_tracker,
                                             ..
                                         } = &mut *state
                                         {
-                                            (damage_tracker.take(), cursor_damage_tracker.take())
+                                            (damage_trackers.take(), cursor_damage_tracker.take())
                                         } else {
                                             (None, None)
                                         };
@@ -740,7 +776,7 @@ impl PipeWire {
                                         size,
                                         alpha,
                                         dma_negotiation: Some(dma_negotiation),
-                                        damage_tracker,
+                                        damage_trackers,
                                         cursor_damage_tracker,
                                         last_cursor_location: None,
                                     };
@@ -783,7 +819,7 @@ impl PipeWire {
                                             modifier,
                                             plane_count: plane_count as i32,
                                         }),
-                                        damage_tracker: None,
+                                        damage_trackers: None,
                                         cursor_damage_tracker: None,
                                         last_cursor_location: None,
                                     };
@@ -828,7 +864,7 @@ impl PipeWire {
                                 size: format_size,
                                 alpha: format_has_alpha,
                                 dma_negotiation: None,
-                                damage_tracker: None,
+                                damage_trackers: None,
                                 cursor_damage_tracker: None,
                                 last_cursor_location: None,
                             };
@@ -1287,9 +1323,10 @@ impl Cast {
         scale: Scale<f64>,
     ) -> bool {
         let mut inner = self.inner.borrow_mut();
+        let frames_rendered = inner.frames_rendered;
 
         let CastState::Ready {
-            damage_tracker,
+            damage_trackers,
             cursor_damage_tracker,
             last_cursor_location,
             ..
@@ -1298,8 +1335,8 @@ impl Cast {
             error!("cast must be in Ready state to render");
             return false;
         };
-        let damage_tracker = damage_tracker
-            .get_or_insert_with(|| OutputDamageTracker::new(size, scale, Transform::Normal));
+        let damage_trackers = damage_trackers
+            .get_or_insert_with(|| DamageTrackers::new(size, scale, frames_rendered));
         let cursor_damage_tracker = cursor_damage_tracker.get_or_insert_with(|| {
             OutputDamageTracker::new(
                 Size::from((CURSOR_WIDTH as _, CURSOR_HEIGHT as _)),
@@ -1309,11 +1346,11 @@ impl Cast {
         });
 
         // Size change will drop the damage tracker, but scale change won't, so check it here.
-        let OutputModeSource::Static { scale: t_scale, .. } = damage_tracker.mode() else {
+        let OutputModeSource::Static { scale: t_scale, .. } = damage_trackers.check.mode() else {
             unreachable!();
         };
         if *t_scale != scale {
-            *damage_tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+            *damage_trackers = DamageTrackers::new(size, scale, frames_rendered);
             *cursor_damage_tracker = OutputDamageTracker::new(
                 Size::from((CURSOR_WIDTH as _, CURSOR_HEIGHT as _)),
                 scale,
@@ -1329,7 +1366,7 @@ impl Cast {
         if self.cursor_mode == CursorMode::Metadata || self.cursor_mode == CursorMode::Hidden {
             elements = &elements[cursor_data.elem_count..];
         }
-        let (damage, states) = damage_tracker.damage_output(1, elements).unwrap();
+        let (damage, states) = damage_trackers.check.damage_output(1, elements).unwrap();
 
         if self.cursor_mode == CursorMode::Metadata {
             let (damage, _states) = cursor_damage_tracker
@@ -1351,13 +1388,13 @@ impl Cast {
             let mut inner = self.inner.borrow_mut();
             // The damage above counts as sent; reset so the next frame is full and nothing is lost.
             if let CastState::Ready {
-                damage_tracker,
+                damage_trackers,
                 cursor_damage_tracker,
                 last_cursor_location,
                 ..
             } = &mut inner.state
             {
-                *damage_tracker = None;
+                *damage_trackers = None;
                 // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
                 if redraw_cursor {
                     *cursor_damage_tracker = None;
@@ -1375,15 +1412,20 @@ impl Cast {
         let mut inner = self.inner.borrow_mut();
         let inner_ = &mut *inner;
         let CastState::Ready {
-            damage_tracker,
+            damage_trackers,
             alpha,
             ..
         } = &mut inner_.state
         else {
             unreachable!()
         };
-        let damage_tracker = damage_tracker.as_mut().unwrap();
+        let damage_trackers = damage_trackers.as_mut().unwrap();
         let alpha = *alpha;
+
+        // Count every render, even a failed one: the render tracker's history may have grown, and a
+        // too old age only costs a fuller redraw, while a too young one would leave stale areas.
+        let frame = inner_.frames_rendered;
+        inner_.frames_rendered += 1;
 
         unsafe {
             let spa_buffer = (*buffer).buffer;
@@ -1400,8 +1442,20 @@ impl Cast {
             let res = match (*(*spa_buffer).datas).type_ {
                 x if x == DataType::DmaBuf.as_raw() => {
                     let dmabuf = inner_.dmabufs[&fd].clone();
-                    render_to_dmabuf(renderer, damage_tracker, dmabuf, elements, states)
-                        .map(|x| (x, SharingBuf::Dma))
+                    let rendered_at = inner_.dmabuf_rendered_at.remove(&fd);
+                    let age = damage_trackers.buffer_age(rendered_at, frame);
+                    let res = render_to_dmabuf(
+                        renderer,
+                        &mut damage_trackers.render,
+                        dmabuf,
+                        age,
+                        elements,
+                        states,
+                    );
+                    if res.is_ok() {
+                        inner_.dmabuf_rendered_at.insert(fd, frame);
+                    }
+                    res.map(|x| (x, SharingBuf::Dma))
                 }
                 x if x == DataType::MemFd.as_raw() => {
                     let shmbuf = &inner_.shmbufs[&fd];
@@ -1412,8 +1466,15 @@ impl Cast {
                         Fourcc::Xrgb8888
                     };
 
-                    render_to_shmbuf(renderer, damage_tracker, shmbuf, fourcc, elements, states)
-                        .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
+                    render_to_shmbuf(
+                        renderer,
+                        &mut damage_trackers.render,
+                        shmbuf,
+                        fourcc,
+                        elements,
+                        states,
+                    )
+                    .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
                 }
                 _ => Err(anyhow::anyhow!(
                     "unknown data type in dequeue_buffer_and_render"
@@ -1442,12 +1503,12 @@ impl Cast {
 
         // Clear out the damage tracker if we're in Ready state.
         if let CastState::Ready {
-            damage_tracker,
+            damage_trackers,
             cursor_damage_tracker,
             ..
         } = &mut inner.state
         {
-            *damage_tracker = None;
+            *damage_trackers = None;
             *cursor_damage_tracker = None;
         };
         drop(inner);
@@ -1595,6 +1656,8 @@ impl CastInner {
 
                     let fd = (*(*spa_buffer).datas).fd;
                     assert!(self.dmabufs.insert(fd, dmabuf).is_none());
+                    // The fd number may have belonged to a removed buffer.
+                    self.dmabuf_rendered_at.remove(&fd);
                     debug!(
                         "pw stream: added dma buffer, {} in total",
                         self.dmabufs.len()
@@ -1651,6 +1714,7 @@ impl CastInner {
 
                 let fd = (*spa_data).fd;
                 self.dmabufs.remove(&fd);
+                self.dmabuf_rendered_at.remove(&fd);
             } else if (*spa_data).type_ == DataType::MemFd.as_raw() {
                 trace!("pw stream: remove_buffer (shm)");
                 assert_eq!((*spa_buffer).n_datas, SHM_BLOCKS as u32);
@@ -2060,6 +2124,21 @@ fn clear_shmbuf(buffer: &Shmbuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffer_age_only_counts_frames_of_the_current_tracker() {
+        let trackers = DamageTrackers::new(Size::from((100, 100)), Scale::from(1.), 10);
+
+        // Never rendered to, or rendered by a tracker that was since reset: full redraw.
+        assert_eq!(trackers.buffer_age(None, 15), 0);
+        assert_eq!(trackers.buffer_age(Some(9), 15), 0);
+        // Rendered by this tracker: frames since then.
+        assert_eq!(trackers.buffer_age(Some(14), 15), 1);
+        assert_eq!(trackers.buffer_age(Some(10), 15), 5);
+        // Bogus future values don't make a young age.
+        assert_eq!(trackers.buffer_age(Some(15), 15), 0);
+        assert_eq!(trackers.buffer_age(Some(20), 15), 0);
+    }
 
     #[test]
     fn shm_layout_uses_spa_representable_dimensions() {
