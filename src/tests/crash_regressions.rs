@@ -293,6 +293,20 @@ fn ipc_request_size_is_bounded() {
 }
 
 #[test]
+fn negative_popup_positioner_parent_size() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // smithay stored the parent size unchecked, and building a negative Size fails a debug assert.
+    let state = &mut f.client(id).state;
+    let xdg_wm_base = state.xdg_wm_base.as_ref().unwrap();
+    let positioner = xdg_wm_base.create_positioner(&state.qh, ());
+    positioner.set_parent_size(-1, -1);
+    f.double_roundtrip(id);
+}
+
+#[test]
 fn huge_popup_positioner_values() {
     use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_positioner::{
         self, ConstraintAdjustment, Gravity, XdgPositioner,
