@@ -27,14 +27,16 @@ tracy-client = { version = "0.18.5", default-features = false }
 
 [workspace.dependencies.smithay]
 # version = "0.4.1"
-git = "https://github.com/Smithay/smithay.git"
-rev = "8a270232f1bfc416c781273c98a3f52a812a0bba"
+# Smithay 8a27023 plus the xdg_positioner overflow fix (#90). Switch back to Smithay/smithay once
+# the fix is upstream.
+git = "https://github.com/Deliveos/smithay.git"
+rev = "dfca8be746d747ceba0a4e7ec19a0373ff89e35b"
 default-features = false
 
 [workspace.dependencies.smithay-drm-extras]
 # version = "0.1.0"
-git = "https://github.com/Smithay/smithay.git"
-rev = "8a270232f1bfc416c781273c98a3f52a812a0bba"
+git = "https://github.com/Deliveos/smithay.git"
+rev = "dfca8be746d747ceba0a4e7ec19a0373ff89e35b"
 # path = "../smithay/smithay-drm-extras"
 
 [package]
