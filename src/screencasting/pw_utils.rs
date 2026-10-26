@@ -1379,21 +1379,7 @@ impl Cast {
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
             let mut inner = self.inner.borrow_mut();
-            // The damage above counts as sent; reset so the next frame is full and nothing is lost.
-            if let CastState::Ready {
-                damage_trackers,
-                cursor_damage_tracker,
-                last_cursor_location,
-                ..
-            } = &mut inner.state
-            {
-                *damage_trackers = None;
-                // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
-                if redraw_cursor {
-                    *cursor_damage_tracker = None;
-                }
-                *last_cursor_location = None;
-            }
+            inner.forget_unsent_frame(redraw_cursor);
             inner.note_no_buffer();
             drop(inner);
             self.schedule_retry();
@@ -1493,6 +1479,7 @@ impl Cast {
                 Err(err) => {
                     warn!("error rendering to buffer: {err:?}");
                     return_unused_buffer(&self.stream, pw_buffer);
+                    self.inner.borrow_mut().forget_unsent_frame(redraw_cursor);
                     false
                 }
             }
@@ -1565,6 +1552,26 @@ impl Cast {
 }
 
 impl CastInner {
+    /// Resets what a frame that didn't reach the consumer counted as sent, so that the next frame
+    /// is full and nothing is lost.
+    fn forget_unsent_frame(&mut self, redraw_cursor: bool) {
+        if let CastState::Ready {
+            damage_trackers,
+            cursor_damage_tracker,
+            last_cursor_location,
+            ..
+        } = &mut self.state
+        {
+            // Both trackers: the check tracker already counts the frame's damage.
+            *damage_trackers = None;
+            // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
+            if redraw_cursor {
+                *cursor_damage_tracker = None;
+            }
+            *last_cursor_location = None;
+        }
+    }
+
     /// Logs a skipped frame, warning at most once per `WARNING_INTERVAL`, since a slow consumer
     /// can hit this on every other frame.
     fn note_no_buffer(&mut self) {
