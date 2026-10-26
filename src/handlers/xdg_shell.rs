@@ -1634,7 +1634,7 @@ pub fn add_mapped_toplevel_pre_commit_hook(toplevel: &ToplevelSurface) -> HookId
         } else {
             if animate {
                 state.backend.with_primary_renderer(|renderer| {
-                    mapped.store_animation_snapshot(renderer);
+                    mapped.store_animation_snapshot(renderer, output);
                 });
             }
 

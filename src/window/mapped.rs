@@ -1,4 +1,5 @@
 use std::cell::{Cell, Ref, RefCell};
+use std::mem;
 use std::time::Duration;
 
 use niri_config::{Color, Config, CornerRadius, GradientInterpolation, WindowRule};
@@ -125,15 +126,16 @@ pub struct Mapped {
     /// Snapshot right before an animated commit, without popups.
     animation_snapshot: Option<LayoutElementRenderSnapshot>,
 
-    /// Whether an animated configure was sent since the last `store_configure_snapshot()`.
+    /// Whether an animated configure was sent since the last `take_needs_configure_snapshot()`.
     needs_configure_snapshot: bool,
 
-    /// Snapshot from when the first unanswered animated configure was sent, without popups.
+    /// Snapshot from when the first unanswered animated configure was sent, without popups, and
+    /// the output scale that its texture was rendered at.
     ///
     /// Used instead of the snapshot on the commit, which can mix the old and the new state: a
     /// client can resize its desynchronized subsurfaces before it commits the toplevel (Firefox
     /// does this).
-    configure_snapshot: Option<LayoutElementRenderSnapshot>,
+    configure_snapshot: Option<(LayoutElementRenderSnapshot, f64)>,
 
     /// State for the logic to request a size once (for floating windows).
     request_size_once: Option<RequestSizeOnce>,
@@ -501,21 +503,40 @@ impl Mapped {
         should_animate
     }
 
-    pub fn store_animation_snapshot(&mut self, renderer: &mut GlesRenderer) {
-        let snapshot = self.configure_snapshot.take();
+    /// Stores the snapshot for the resize animation of this commit.
+    ///
+    /// `output` is the output that the window is on in the layout.
+    pub fn store_animation_snapshot(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: Option<&Output>,
+    ) {
+        // The configure snapshot only fits if the window is still drawn at the scale of its
+        // texture: the window may have moved to another output before it answered.
+        let scale = output.map(|output| output.current_scale().fractional_scale());
+        let snapshot = self
+            .configure_snapshot
+            .take()
+            .filter(|(_, snapshot_scale)| Some(*snapshot_scale) == scale)
+            .map(|(snapshot, _)| snapshot);
         self.animation_snapshot = Some(snapshot.unwrap_or_else(|| self.render_snapshot(renderer)));
     }
 
-    pub fn needs_configure_snapshot(&self) -> bool {
-        self.needs_configure_snapshot
+    /// Returns whether an animated configure was sent since the last call.
+    pub fn take_needs_configure_snapshot(&mut self) -> bool {
+        mem::take(&mut self.needs_configure_snapshot)
+    }
+
+    #[cfg(test)]
+    pub fn has_configure_snapshot(&self) -> bool {
+        self.configure_snapshot.is_some()
     }
 
     /// Snapshots the window for the resize animation of a configure that was just sent.
     ///
-    /// Call this before the configure is flushed to the client, so that the snapshot shows what is
-    /// on screen.
-    pub fn store_configure_snapshot(&mut self, renderer: &mut GlesRenderer) {
-        self.needs_configure_snapshot = false;
+    /// `output` is the output that the window is on in the layout. Call this before the configure
+    /// is flushed to the client, so that the snapshot shows what is on screen.
+    pub fn store_configure_snapshot(&mut self, renderer: &mut GlesRenderer, output: &Output) {
         // Keep the snapshot from the first animated configure that the window hasn't answered.
         if self.configure_snapshot.is_some() {
             return;
@@ -523,16 +544,18 @@ impl Mapped {
 
         // Rendering costs a texture, so do it only for windows on screen; the others get their
         // snapshot on commit. Check every surface, since subsurfaces can cover the toplevel.
-        let mut output = None;
+        //
+        // The texture is rendered at the scale of `output`, which is where the tile will draw it.
+        // A window that has just moved there still has the previous output as its primary scanout
+        // output until `output` presents it, so it gets its snapshot on commit too.
+        let mut on_screen = false;
         self.window.with_surfaces(|surface, states| {
-            output = output
-                .take()
-                .or_else(|| surface_primary_scanout_output(surface, states));
+            on_screen |= surface_primary_scanout_output(surface, states).as_ref() == Some(output);
         });
-        let Some(output) = output else {
+        if !on_screen {
             return;
-        };
-        let scale = Scale::from(output.current_scale().fractional_scale());
+        }
+        let scale = output.current_scale().fractional_scale();
 
         let snapshot = self.render_snapshot(renderer);
         // Render it right away, since the client may draw into these buffers before it commits.
@@ -541,8 +564,8 @@ impl Mapped {
             target: RenderTarget::Output,
             xray: None,
         };
-        snapshot.texture(ctx, scale);
-        self.configure_snapshot = Some(snapshot);
+        snapshot.texture(ctx, Scale::from(scale));
+        self.configure_snapshot = Some((snapshot, scale));
     }
 
     pub fn take_pending_transaction(&mut self, commit_serial: Serial) -> Option<Transaction> {

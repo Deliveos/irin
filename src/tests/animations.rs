@@ -13,6 +13,7 @@ use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
 use super::*;
+use crate::layout::ActivateWindow;
 use crate::niri::{Niri, State};
 use crate::render_helpers::{copy_framebuffer, create_texture, RenderCtx, RenderTarget};
 
@@ -72,6 +73,10 @@ fn set_time(niri: &mut Niri, time: Duration) {
 
 // Sets up a fixture with linear animations, a renderer, and an output.
 fn set_up() -> Fixture {
+    set_up_with(|_| ())
+}
+
+fn set_up_with(adjust_config: impl FnOnce(&mut Config)) -> Fixture {
     const LINEAR: Kind = Kind::Easing(EasingParams {
         duration_ms: 1000,
         curve: Curve::Linear,
@@ -81,6 +86,9 @@ fn set_up() -> Fixture {
     config.layout.gaps = 0.0;
     config.animations.window_resize.anim.kind = LINEAR;
     config.animations.window_movement.0.kind = LINEAR;
+    // Keep the overlay out of the rendered pixels.
+    config.hotkey_overlay.skip_at_startup = true;
+    adjust_config(&mut config);
 
     let mut f = Fixture::with_config(config);
     f.niri_state().backend.headless().add_renderer().unwrap();
@@ -89,10 +97,10 @@ fn set_up() -> Fixture {
     f
 }
 
-// Renders output 1 the way a backend does, including the visibility tracking, and returns the
-// pixels as RGBA.
-fn render_output(f: &mut Fixture) -> Vec<u8> {
-    let output = f.niri_output(1);
+// Renders an output with a 1920×1080 mode the way a backend does, including the visibility
+// tracking, and returns the pixels as RGBA.
+fn render_output(f: &mut Fixture, n: u8) -> Vec<u8> {
+    let output = f.niri_output(n);
     let State { backend, niri, .. } = f.niri_state();
     niri.update_render_elements(Some(&output));
 
@@ -261,13 +269,13 @@ fn egl_resize_animation_starts_from_what_was_on_screen() {
     f.double_roundtrip(id);
     set_time(f.niri(), Duration::ZERO);
     f.niri_complete_animations();
-    render_output(&mut f);
+    render_output(&mut f, 1);
 
     f.niri().layout.toggle_full_width();
     f.double_roundtrip(id);
     resize(&mut f, 1920);
     f.niri_complete_animations();
-    let pixels = render_output(&mut f);
+    let pixels = render_output(&mut f, 1);
     assert_eq!(pixel(&pixels, 1440, 540), CONTENT);
 
     // Back to half width. At the start of the animation, the window should look the way it did
@@ -275,7 +283,96 @@ fn egl_resize_animation_starts_from_what_was_on_screen() {
     f.niri().layout.toggle_full_width();
     f.double_roundtrip(id);
     resize(&mut f, 960);
-    let pixels = render_output(&mut f);
+    let pixels = render_output(&mut f, 1);
     assert_eq!(pixel(&pixels, 480, 540), CONTENT);
     assert_eq!(pixel(&pixels, 1440, 540), CONTENT);
+}
+
+#[test]
+fn egl_resize_animation_off_takes_no_configure_snapshot() {
+    for (window_resize_off, all_off) in [(false, false), (true, false), (false, true)] {
+        let mut f = set_up_with(|config| {
+            config.animations.window_resize.anim.off = window_resize_off;
+            config.animations.off = all_off;
+        });
+        let id = f.add_client();
+
+        let window = f.client(id).create_window();
+        let surface = window.surface.clone();
+        window.commit();
+        f.roundtrip(id);
+        let client = f.client(id);
+        client
+            .state
+            .attach_shm_buffer(&surface, 960, 1080, [0, 0, 255]);
+        client.window(&surface).ack_last_and_commit();
+        f.double_roundtrip(id);
+        render_output(&mut f, 1);
+
+        f.niri().layout.toggle_full_width();
+        f.double_roundtrip(id);
+
+        let (_, mapped) = f.niri().layout.windows().next().unwrap();
+        let off = window_resize_off || all_off;
+        assert_eq!(mapped.has_configure_snapshot(), !off);
+    }
+}
+
+#[test]
+fn egl_resize_animation_after_moving_to_output_with_other_scale() {
+    const FRAME: [u8; 3] = [0, 0, 255];
+    const CONTENT: [u8; 3] = [0, 255, 0];
+
+    // The window either moves and then gets an animated configure, or it moves before it answers
+    // an animated configure that it got on the first output.
+    for resize_before_move in [false, true] {
+        let mut f = set_up_with(|config| {
+            let outputs = Config::parse_mem(r#"output "headless-2" { scale 2; }"#).unwrap();
+            config.outputs = outputs.outputs;
+        });
+        f.add_output(2, (1920, 1080));
+        let id = f.add_client();
+
+        // The left half of the window is the contents, the right half is the frame.
+        let window = f.client(id).create_window();
+        let surface = window.surface.clone();
+        window.commit();
+        f.roundtrip(id);
+        let (content, _subsurface) = f.client(id).state.create_subsurface(&surface);
+
+        let draw = |f: &mut Fixture, w: i32, h: i32| {
+            let client = f.client(id);
+            client.state.attach_shm_buffer(&content, w / 2, h, CONTENT);
+            content.commit();
+            client.state.attach_shm_buffer(&surface, w, h, FRAME);
+            client.window(&surface).ack_last_and_commit();
+            f.roundtrip(id);
+        };
+
+        draw(&mut f, 960, 1080);
+        f.double_roundtrip(id);
+        set_time(f.niri(), Duration::ZERO);
+        f.niri_complete_animations();
+        render_output(&mut f, 1);
+
+        if resize_before_move {
+            f.niri().layout.toggle_full_width();
+            f.double_roundtrip(id);
+        }
+
+        // Move the window to the scale-2 output, where it becomes 480×540. That output doesn't
+        // render before the window answers.
+        let output = f.niri_output(2);
+        f.niri()
+            .layout
+            .move_to_output(None, &output, None, ActivateWindow::Smart);
+        f.double_roundtrip(id);
+        draw(&mut f, 480, 540);
+
+        // At the start of the animation, the window is still 960 logical pixels wide, which is
+        // all of output 2, so its left half is the contents.
+        let pixels = render_output(&mut f, 2);
+        assert_eq!(pixel(&pixels, 720, 270), CONTENT, "{resize_before_move}");
+        assert_eq!(pixel(&pixels, 1200, 270), FRAME, "{resize_before_move}");
+    }
 }

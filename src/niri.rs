@@ -850,11 +850,23 @@ impl State {
     fn store_configure_snapshots(&mut self) {
         let _span = tracy_client::span!("State::store_configure_snapshots");
 
+        // With the resize animation off, the snapshot is never drawn, so don't render it.
+        let resize_anim_off = {
+            let animations = &self.niri.config.borrow().animations;
+            animations.off || animations.window_resize.anim.off
+        };
+
         let backend = &mut self.backend;
-        self.niri.layout.with_windows_mut(|mapped, _| {
-            if mapped.needs_configure_snapshot() {
-                backend.with_primary_renderer(|renderer| mapped.store_configure_snapshot(renderer));
+        self.niri.layout.with_windows_mut(|mapped, output| {
+            if !mapped.take_needs_configure_snapshot() || resize_anim_off {
+                return;
             }
+            let Some(output) = output else {
+                return;
+            };
+            backend.with_primary_renderer(|renderer| {
+                mapped.store_configure_snapshot(renderer, output);
+            });
         });
     }
 
