@@ -1082,20 +1082,12 @@ impl Cast {
 
     pub fn record_frame_time(&mut self, recorded: Duration) {
         let interval = self.inner.borrow().min_time_between_frames;
-        let ideal = self.last_frame_time + interval;
-
-        // Absorb small (< 1 frame) differences in output refresh interval vs. screencast framerate
-        // to keep the screencast time base consistent instead of shifting forward every frame.
-        //
-        // After a missed interval or a rate change, restart instead of catching up in a burst.
-        self.last_frame_time = if self.last_frame_interval == interval
-            && recorded >= self.last_frame_time
-            && recorded < ideal + interval
-        {
-            ideal
-        } else {
-            recorded
-        };
+        self.last_frame_time = paced_frame_time(
+            self.last_frame_time,
+            self.last_frame_interval,
+            interval,
+            recorded,
+        );
         self.last_frame_interval = interval;
     }
 
@@ -1439,6 +1431,7 @@ impl Cast {
             return false;
         }
         *last_cursor_location = Some(cursor_data.location);
+        let cursor_only = damage.is_none();
         drop(inner);
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
@@ -1466,6 +1459,17 @@ impl Cast {
         self.remove_retry_redraw();
         let buffer = pw_buffer.as_ptr();
 
+        // Only the cursor changed, so send just its metadata instead of rendering the frame again.
+        if cursor_only {
+            unsafe {
+                add_cursor_metadata(renderer, (*buffer).buffer, cursor_data, redraw_cursor);
+                mark_buffer_as_metadata_only(pw_buffer, &mut self.sequence_counter);
+                trace!("queueing cursor buffer with seq={}", self.sequence_counter);
+                self.queue_after_sync(renderer, pw_buffer, SyncPoint::signaled(), None);
+            }
+            return true;
+        }
+
         let mut inner = self.inner.borrow_mut();
         let inner_ = &mut *inner;
         let CastState::Ready {
@@ -1491,9 +1495,6 @@ impl Cast {
                 add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor);
             }
 
-            // FIXME: would be good to skip rendering the full frame if only the pointer changed.
-            // Unfortunately, I think the OBS PipeWire code needs to be updated first to cleanly
-            // allow for that codepath.
             let fd = (*(*spa_buffer).datas).fd;
 
             let res = match (*(*spa_buffer).datas).type_ {
@@ -1925,6 +1926,30 @@ enum SharingBuf {
     Shm(ShmLayout),
 }
 
+/// Returns the time to pace the next cast frame from, after a frame recorded at `recorded`.
+fn paced_frame_time(
+    last: Duration,
+    last_interval: Duration,
+    interval: Duration,
+    recorded: Duration,
+) -> Duration {
+    let ideal = last + interval;
+
+    // Absorb small (< 1 frame) differences in output refresh interval vs. screencast framerate
+    // to keep the screencast time base consistent instead of shifting forward every frame.
+    //
+    // Only a late frame moves back to the ideal time. An early one (within the delay allowance)
+    // keeps its own: moving it forward would put the time base after the frame, and a second
+    // redraw for the same target would then look like time going backwards.
+    //
+    // After a missed interval or a rate change, restart instead of catching up in a burst.
+    if last_interval == interval && recorded >= ideal && recorded < ideal + interval {
+        ideal
+    } else {
+        recorded
+    }
+}
+
 fn allocate_shmbuf(size: Size<u32, Physical>) -> anyhow::Result<Shmbuf> {
     let layout = ShmLayout::new(size)?;
     let fd = memfd_create(
@@ -1999,6 +2024,28 @@ unsafe fn mark_buffer_as_good(pw_buffer: NonNull<pw_buffer>, sequence: &mut u64,
         // FIXME: we could try passing real presentation timestamps for rendered frames here.
         // However, then we must also ensure that the time base never jumps (e.g. when switching a
         // dynamic cast between outputs) as this would mess up the timing downstream.
+        (*header).pts = -1;
+    }
+}
+
+/// Marks the buffer as carrying no new frame, only metadata like a cursor update.
+///
+/// Consumers keep the previous frame: OBS skips the frame of a buffer with an empty chunk, and
+/// libwebrtc skips the frame of a buffer with a corrupted chunk (it would import a DMA-BUF of any
+/// size). Both read the cursor metadata first. A corrupted header would make OBS drop the cursor
+/// update too, so the header stays clean.
+unsafe fn mark_buffer_as_metadata_only(pw_buffer: NonNull<pw_buffer>, sequence: &mut u64) {
+    let pw_buffer = pw_buffer.as_ptr();
+    let spa_buffer = (*pw_buffer).buffer;
+    let chunk = (*(*spa_buffer).datas).chunk;
+    (*chunk).size = 0;
+    (*chunk).flags = SPA_CHUNK_FLAG_CORRUPTED as i32;
+
+    *sequence = sequence.wrapping_add(1);
+    if let Some(header) = find_meta_header(spa_buffer) {
+        let header = header.as_ptr();
+        (*header).flags = 0;
+        (*header).seq = *sequence;
         (*header).pts = -1;
     }
 }
@@ -2192,6 +2239,31 @@ mod tests {
         // Bogus future values don't make a young age.
         assert_eq!(trackers.buffer_age(Some(15), 15), 0);
         assert_eq!(trackers.buffer_age(Some(20), 15), 0);
+    }
+
+    #[test]
+    fn paced_frame_time_never_runs_ahead_of_the_frame() {
+        let ms = Duration::from_millis;
+        let us = Duration::from_micros;
+        let interval = us(16_667);
+        let last = ms(1000);
+
+        // A late frame keeps the cadence.
+        let late = last + interval + ms(3);
+        assert_eq!(
+            paced_frame_time(last, interval, interval, late),
+            last + interval
+        );
+
+        // An early frame keeps its own time, so a second redraw for the same target isn't
+        // before it.
+        let early = last + interval - us(50);
+        assert_eq!(paced_frame_time(last, interval, interval, early), early);
+
+        // A missed interval or a rate change restarts.
+        let missed = last + interval * 2 + us(1);
+        assert_eq!(paced_frame_time(last, interval, interval, missed), missed);
+        assert_eq!(paced_frame_time(last, ms(33), interval, late), late);
     }
 
     #[test]
