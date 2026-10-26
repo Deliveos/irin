@@ -70,6 +70,9 @@ const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 // Bounds for retrying a frame that was skipped for lack of a free buffer.
 const MIN_RETRY_DELAY: Duration = Duration::from_millis(10);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
+// Buffers offered when the consumer has no preference. Each holds a whole frame (33 MB at 4K),
+// and the damage tracker can only reuse old damage for buffer ages up to 5.
+const DEFAULT_BUFFER_COUNT: i32 = 4;
 const SHM_BLOCKS: usize = 1;
 const SHM_BYTES_PER_PIXEL: usize = 4;
 
@@ -797,7 +800,7 @@ impl PipeWire {
                                     pod::Value::Choice(ChoiceValue::Int(Choice(
                                         ChoiceFlags::empty(),
                                         ChoiceEnum::Range {
-                                            default: 8,
+                                            default: DEFAULT_BUFFER_COUNT,
                                             min: 2,
                                             max: 16
                                         }
@@ -837,7 +840,7 @@ impl PipeWire {
                                     pod::Value::Choice(ChoiceValue::Int(Choice(
                                         ChoiceFlags::empty(),
                                         ChoiceEnum::Range {
-                                            default: 8,
+                                            default: DEFAULT_BUFFER_COUNT,
                                             min: 2,
                                             max: 16
                                         }
@@ -1592,6 +1595,10 @@ impl CastInner {
 
                     let fd = (*(*spa_buffer).datas).fd;
                     assert!(self.dmabufs.insert(fd, dmabuf).is_none());
+                    debug!(
+                        "pw stream: added dma buffer, {} in total",
+                        self.dmabufs.len()
+                    );
                 }
 
                 Ok(self.dmabufs.len() == 1)
@@ -1619,6 +1626,10 @@ impl CastInner {
 
                     let fd = (*(*spa_buffer).datas).fd;
                     assert!(self.shmbufs.insert(fd, shmbuf).is_none());
+                    debug!(
+                        "pw stream: added shm buffer, {} in total",
+                        self.shmbufs.len()
+                    );
                 }
 
                 Ok(self.shmbufs.len() == 1)
