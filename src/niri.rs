@@ -175,7 +175,7 @@ use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{
     encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm,
-    render_to_texture, render_to_vec, shaders, RenderCtx, RenderTarget,
+    render_to_texture, render_to_vec, shaders, CaptureTexture, RenderCtx, RenderTarget,
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
@@ -5797,7 +5797,7 @@ impl Niri {
         let mut screencopy_state = mem::take(&mut self.screencopy_state);
 
         screencopy_state.with_queues_mut(|queue| {
-            let (damage_tracker, screencopy) = queue.split();
+            let (damage_tracker, texture, screencopy) = queue.split();
             if let Some(screencopy) = screencopy {
                 if screencopy.output() == output {
                     let ctx = RenderCtx {
@@ -5836,6 +5836,7 @@ impl Niri {
                         let render_result = Self::render_for_screencopy_internal(
                             renderer,
                             damage_tracker,
+                            texture,
                             &elements,
                             states,
                             screencopy,
@@ -5890,7 +5891,7 @@ impl Niri {
             elements.push(elem);
         });
 
-        let Some(damage_tracker) = self.screencopy_state.damage_tracker(manager) else {
+        let Some((damage_tracker, texture)) = self.screencopy_state.damage_tracker(manager) else {
             error!("screencopy queue must not be deleted as long as frames exist");
             bail!("screencopy queue missing");
         };
@@ -5900,6 +5901,7 @@ impl Niri {
         let res = Self::render_for_screencopy_internal(
             renderer,
             damage_tracker,
+            texture,
             &elements,
             states,
             &screencopy,
@@ -6016,6 +6018,7 @@ impl Niri {
                 CaptureBuffer::Shm => render_to_shm(
                     renderer,
                     &mut s.damage_tracker,
+                    &mut s.texture,
                     &buffer,
                     wl_shm::Format::Xrgb8888,
                     elements,
@@ -6127,6 +6130,7 @@ impl Niri {
             let res = render_to_shm(
                 renderer,
                 &mut s.damage_tracker,
+                &mut s.texture,
                 &buffer,
                 wl_shm::Format::Argb8888,
                 elements,
@@ -6335,6 +6339,7 @@ impl Niri {
     fn render_for_screencopy_internal(
         renderer: &mut GlesRenderer,
         damage_tracker: &mut OutputDamageTracker,
+        texture: &mut CaptureTexture,
         elements: &[impl RenderElement<GlesRenderer>],
         states: RenderElementStates,
         screencopy: &Screencopy,
@@ -6356,6 +6361,7 @@ impl Niri {
                 render_to_shm(
                     renderer,
                     damage_tracker,
+                    texture,
                     wl_buffer,
                     wl_shm::Format::Xrgb8888,
                     elements,

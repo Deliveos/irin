@@ -12,7 +12,7 @@ use smithay::backend::renderer::gles::{
 };
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{
-    Bind, Color32F, ExportMem, Frame, Offscreen, Renderer, Texture as _,
+    Bind, Color32F, ContextId, ExportMem, Frame, Offscreen, Renderer, Texture as _,
 };
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm;
@@ -181,6 +181,39 @@ pub fn create_texture(
     renderer.create_buffer(fourcc, buffer_size)
 }
 
+/// Offscreen texture kept across the frames of a capture, so that each frame doesn't allocate a
+/// new full-size one.
+#[derive(Debug, Default)]
+pub struct CaptureTexture(Option<(ContextId<GlesTexture>, Fourcc, GlesTexture)>);
+
+impl CaptureTexture {
+    /// Returns the texture, creating it if the size, the format or the renderer changed.
+    fn get(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        size: Size<i32, Physical>,
+        fourcc: Fourcc,
+    ) -> Result<&mut GlesTexture, GlesError> {
+        let context_id = renderer.context_id();
+        let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
+        let reusable = self.0.as_ref().is_some_and(|(id, format, texture)| {
+            *id == context_id && *format == fourcc && texture.size() == buffer_size
+        });
+        if !reusable {
+            // Free the old one before allocating, there may not be room for both.
+            self.0 = None;
+        }
+        let (_, _, texture) = match &mut self.0 {
+            Some(entry) => entry,
+            slot @ None => {
+                let texture = create_texture(renderer, size, fourcc)?;
+                slot.insert((context_id, fourcc, texture))
+            }
+        };
+        Ok(texture)
+    }
+}
+
 pub fn copy_framebuffer(
     renderer: &mut GlesRenderer,
     target: &GlesTarget,
@@ -254,6 +287,7 @@ pub fn render_and_download(
 pub fn render_and_download_with_damage(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
+    texture: &mut CaptureTexture,
     fourcc: Fourcc,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
@@ -261,10 +295,10 @@ pub fn render_and_download_with_damage(
     let _span = tracy_client::span!();
 
     let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
-    let mut texture = create_texture(renderer, size, fourcc).context("error creating texture")?;
-    let mut target = renderer
-        .bind(&mut texture)
-        .context("error binding texture")?;
+    let texture = texture
+        .get(renderer, size, fourcc)
+        .context("error creating texture")?;
+    let mut target = renderer.bind(texture).context("error binding texture")?;
 
     let _res = damage_tracker
         .render_output_with_states(
@@ -331,6 +365,7 @@ pub fn render_to_dmabuf(
 pub fn render_to_shm(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
+    texture: &mut CaptureTexture,
     buffer: &WlBuffer,
     format: wl_shm::Format,
     elements: &[impl RenderElement<GlesRenderer>],
@@ -373,11 +408,10 @@ pub fn render_to_shm(
             "buffer does not fit in its shm pool"
         );
 
-        let mut texture =
-            create_texture(renderer, size, fourcc).context("error creating texture")?;
-        let mut target = renderer
-            .bind(&mut texture)
-            .context("error binding texture")?;
+        let texture = texture
+            .get(renderer, size, fourcc)
+            .context("error creating texture")?;
+        let mut target = renderer.bind(texture).context("error binding texture")?;
 
         let _res = damage_tracker
             .render_output_with_states(
@@ -471,4 +505,34 @@ fn render_elements(
     }
 
     frame.finish().context("error finishing frame")
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::egl::native::EGLSurfacelessDisplay;
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+
+    use super::*;
+
+    #[test]
+    fn egl_capture_texture_is_reused_until_size_or_format_changes() {
+        let mut renderer = unsafe {
+            let display = EGLDisplay::new(EGLSurfacelessDisplay).unwrap();
+            let context = EGLContext::new(&display).unwrap();
+            GlesRenderer::new(context).unwrap()
+        };
+
+        let mut texture = CaptureTexture::default();
+        let size = Size::from((64, 32));
+        let first = texture.get(&mut renderer, size, Fourcc::Xrgb8888).unwrap();
+        let first = first.tex_id();
+        let again = texture.get(&mut renderer, size, Fourcc::Xrgb8888).unwrap();
+        assert_eq!(again.tex_id(), first);
+
+        let size = Size::from((32, 32));
+        let resized = texture.get(&mut renderer, size, Fourcc::Xrgb8888).unwrap();
+        assert_eq!(resized.size(), Size::from((32, 32)));
+        let reformatted = texture.get(&mut renderer, size, Fourcc::Argb8888).unwrap();
+        assert_eq!(reformatted.format(), Some(Fourcc::Argb8888));
+    }
 }

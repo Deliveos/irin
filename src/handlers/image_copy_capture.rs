@@ -30,12 +30,15 @@ use wayland_backend::server::Credentials;
 
 use crate::cursor::{RenderCursor, XCursor};
 use crate::niri::{Niri, State};
+use crate::render_helpers::CaptureTexture;
 use crate::utils::{get_credentials_for_client, CastSessionId, CastStreamId};
 
 /// Output capture session.
 pub struct ImageCopySession {
     pub session: Session,
     pub damage_tracker: OutputDamageTracker,
+    /// Offscreen texture for SHM frames.
+    pub texture: CaptureTexture,
     /// Frame waiting for output damage.
     pub pending_frame: Option<Frame>,
     /// Cast session id, shared with the cursor session of the same source.
@@ -51,6 +54,8 @@ pub struct ImageCopyCursorSession {
     pub session: CursorSession,
     /// Damage to the cursor image (i.e., not movement).
     pub damage_tracker: OutputDamageTracker,
+    /// Offscreen texture for SHM frames.
+    pub texture: CaptureTexture,
     /// Frame waiting for cursor image change.
     pub pending_frame: Option<Frame>,
     /// Cast session id, shared with the output session of the same source.
@@ -330,6 +335,7 @@ impl ImageCopyCaptureHandler for State {
         self.niri.image_copy_sessions.push(ImageCopySession {
             session,
             damage_tracker,
+            texture: CaptureTexture::default(),
             pending_frame: None,
             session_id,
             stream_id: CastStreamId::next(),
@@ -347,6 +353,7 @@ impl ImageCopyCaptureHandler for State {
             .push(ImageCopyCursorSession {
                 session,
                 damage_tracker,
+                texture: CaptureTexture::default(),
                 pending_frame: None,
                 session_id,
                 stream_id: CastStreamId::next(),

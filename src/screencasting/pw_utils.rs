@@ -57,7 +57,7 @@ use crate::dbus::mutter_screen_cast::{self, CursorMode};
 use crate::niri::{CastTarget, State};
 use crate::render_helpers::{
     clear_dmabuf, encompassing_geo, render_and_download, render_and_download_with_damage,
-    render_to_dmabuf,
+    render_to_dmabuf, CaptureTexture,
 };
 use crate::screencasting::CastRenderElement;
 use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
@@ -138,6 +138,8 @@ struct CastInner {
     frames_rendered: u64,
     /// For each DMA-BUF, the `frames_rendered` value when it was last rendered to.
     dmabuf_rendered_at: HashMap<i64, u64>,
+    /// Offscreen texture for rendering SHM frames before they're copied into the buffer.
+    shm_texture: CaptureTexture,
     /// Buffers dequeued from PipeWire in process of rendering.
     ///
     /// This is an ordered list of buffers that we started rendering to and waiting for the
@@ -512,6 +514,7 @@ impl PipeWire {
             shmbufs: HashMap::new(),
             frames_rendered: 0,
             dmabuf_rendered_at: HashMap::new(),
+            shm_texture: CaptureTexture::default(),
             rendering_buffers: Vec::new(),
             last_no_buffer_warning: None,
             skipped_frames: 0,
@@ -1469,6 +1472,7 @@ impl Cast {
                     render_to_shmbuf(
                         renderer,
                         &mut damage_trackers.render,
+                        &mut inner_.shm_texture,
                         shmbuf,
                         fourcc,
                         elements,
@@ -2093,6 +2097,7 @@ unsafe fn add_cursor_metadata(
 fn render_to_shmbuf(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
+    texture: &mut CaptureTexture,
     buffer: &Shmbuf,
     fourcc: Fourcc,
     elements: &[impl RenderElement<GlesRenderer>],
@@ -2106,8 +2111,14 @@ fn render_to_shmbuf(
         "invalid buffer size"
     );
 
-    let mapping =
-        render_and_download_with_damage(renderer, damage_tracker, fourcc, elements, states)?;
+    let mapping = render_and_download_with_damage(
+        renderer,
+        damage_tracker,
+        texture,
+        fourcc,
+        elements,
+        states,
+    )?;
 
     let bytes = renderer
         .map_texture(&mapping)
