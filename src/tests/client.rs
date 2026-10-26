@@ -2,6 +2,9 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Write as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,6 +33,7 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
 };
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
+use smithay::reexports::rustix::fs::{memfd_create, MemfdFlags};
 use wayland_backend::client::Backend;
 use wayland_client::globals::Global;
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
@@ -40,6 +44,8 @@ use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
+use wayland_client::protocol::wl_shm::{self, WlShm};
+use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_subcompositor::WlSubcompositor;
 use wayland_client::protocol::wl_subsurface::WlSubsurface;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
@@ -70,6 +76,7 @@ pub struct State {
     pub layer_shell: Option<ZwlrLayerShellV1>,
     pub virtual_pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
+    pub shm: Option<WlShm>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub foreign_toplevel_list: Option<ExtForeignToplevelListV1>,
@@ -287,6 +294,7 @@ impl Client {
             layer_shell: None,
             virtual_pointer_manager: None,
             spbm: None,
+            shm: None,
             viewporter: None,
             ksim: None,
             foreign_toplevel_list: None,
@@ -374,6 +382,28 @@ impl State {
         let spbm = self.spbm.as_ref().unwrap();
         let buffer = spbm.create_u32_rgba_buffer(0, 0, 0, u32::MAX, &self.qh, ());
         surface.attach(Some(&buffer), 0, 0);
+    }
+
+    /// Attaches an opaque `width` × `height` buffer of one RGB color, without committing.
+    ///
+    /// Unlike single-pixel buffers, these are uploaded to a texture, so they show up in snapshots.
+    pub fn attach_shm_buffer(&self, surface: &WlSurface, width: i32, height: i32, rgb: [u8; 3]) {
+        let [r, g, b] = rgb;
+        let stride = width * 4;
+        let fd = memfd_create("nori-test-buffer", MemfdFlags::CLOEXEC).unwrap();
+        let mut file = File::from(fd);
+        // Xrgb8888 is stored as B, G, R, X.
+        let pixels = [b, g, r, 255].repeat((width * height) as usize);
+        file.write_all(&pixels).unwrap();
+
+        let shm = self.shm.as_ref().unwrap();
+        let pool = shm.create_pool(file.as_fd(), stride * height, &self.qh, ());
+        let format = wl_shm::Format::Xrgb8888;
+        let buffer = pool.create_buffer(0, width, height, stride, format, &self.qh, ());
+        pool.destroy();
+
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width, height);
     }
 
     /// Creates a synchronized subsurface with a buffer committed; it appears on the parent's next
@@ -710,6 +740,9 @@ impl Dispatch<WlRegistry, ()> for State {
                     let version = min(version, WlOutput::interface().version);
                     let output = registry.bind(name, version, qh, ());
                     state.outputs.insert(output, String::new());
+                } else if interface == WlShm::interface().name {
+                    let version = min(version, WlShm::interface().version);
+                    state.shm = Some(registry.bind(name, version, qh, ()));
                 } else if interface == WlSubcompositor::interface().name {
                     let version = min(version, WlSubcompositor::interface().version);
                     state.subcompositor = Some(registry.bind(name, version, qh, ()));
@@ -1054,6 +1087,35 @@ impl Dispatch<WlBuffer, ()> for State {
             wl_buffer::Event::Release => (),
             _ => unreachable!(),
         }
+    }
+}
+
+impl Dispatch<WlShm, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlShm,
+        event: <WlShm as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_shm::Event::Format { .. } => (),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<WlShmPool, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlShmPool,
+        _event: <WlShmPool as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
     }
 }
 

@@ -829,6 +829,9 @@ impl State {
 
         self.niri.redraw_queued_outputs(&mut self.backend);
 
+        // All configures of this iteration are sent, and the clients haven't seen them yet.
+        self.store_configure_snapshots();
+
         {
             let _span = tracy_client::span!("flush_clients");
             self.niri.display_handle.flush_clients().unwrap();
@@ -841,6 +844,30 @@ impl State {
         self.niri.clock.clear();
         self.niri.pointer_inactivity_timer_got_reset = false;
         self.niri.notified_activity_this_iteration = false;
+    }
+
+    /// Takes the resize animation snapshots of windows that were just sent an animated configure.
+    fn store_configure_snapshots(&mut self) {
+        let _span = tracy_client::span!("State::store_configure_snapshots");
+
+        // With the resize animation off, the snapshot is never drawn, so don't render it.
+        let resize_anim_off = {
+            let animations = &self.niri.config.borrow().animations;
+            animations.off || animations.window_resize.anim.off
+        };
+
+        let backend = &mut self.backend;
+        self.niri.layout.with_windows_mut(|mapped, output| {
+            if !mapped.take_needs_configure_snapshot() || resize_anim_off {
+                return;
+            }
+            let Some(output) = output else {
+                return;
+            };
+            backend.with_primary_renderer(|renderer| {
+                mapped.store_configure_snapshot(renderer, output);
+            });
+        });
     }
 
     // We monitor both libinput and logind: libinput is always there (including without DBus), but
