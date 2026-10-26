@@ -291,3 +291,73 @@ fn ipc_request_size_is_bounded() {
         "{reply}"
     );
 }
+
+#[test]
+fn huge_popup_positioner_values() {
+    use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_positioner::{
+        self, ConstraintAdjustment, Gravity, XdgPositioner,
+    };
+
+    use crate::tests::client::PopupXdgSurface;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    window.attach_new_buffer();
+    window.set_size(100, 100);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    // Positioner values that each overflowed somewhere in the popup placement math.
+    let cases: [&dyn Fn(&XdgPositioner); 5] = [
+        &|p| {
+            p.set_anchor_rect(i32::MAX - 5, i32::MAX - 5, 10, 10);
+            p.set_anchor(xdg_positioner::Anchor::BottomRight);
+        },
+        &|p| p.set_offset(i32::MAX, i32::MAX),
+        &|p| {
+            p.set_offset(i32::MIN, i32::MIN);
+            p.set_gravity(Gravity::TopLeft);
+        },
+        &|p| {
+            p.set_offset(i32::MIN, i32::MIN);
+            p.set_constraint_adjustment(ConstraintAdjustment::all());
+        },
+        &|p| {
+            p.set_offset(i32::MAX, i32::MAX);
+            p.set_constraint_adjustment(ConstraintAdjustment::all());
+        },
+    ];
+
+    // Each popup nests in the previous one, so that their positions add up too.
+    let mut parent = f.client(id).window(&surface).xdg_surface.clone();
+    for configure in cases {
+        let state = &mut f.client(id).state;
+        let qh = state.qh.clone();
+        let xdg_wm_base = state.xdg_wm_base.clone().unwrap();
+        let positioner = xdg_wm_base.create_positioner(&qh, ());
+        positioner.set_size(10, 10);
+        positioner.set_anchor_rect(0, 0, 1, 1);
+        configure(&positioner);
+
+        let surface = state.create_surface();
+        let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &qh, PopupXdgSurface);
+        let popup = xdg_surface.get_popup(Some(&parent), &positioner, &qh, ());
+        surface.commit();
+        f.roundtrip(id);
+
+        popup.reposition(&positioner, 1);
+        positioner.destroy();
+        f.client(id).state.attach_pixel_buffer(&surface);
+        surface.commit();
+        f.double_roundtrip(id);
+
+        parent = xdg_surface;
+    }
+}
