@@ -300,6 +300,14 @@ fn import_environment() {
             "systemctl --user import-environment {variables};"
         )
         .unwrap();
+        // A portal that is already running was started before this session (for example, by a
+        // program that outlived the previous one). It picks its backends from
+        // XDG_CURRENT_DESKTOP once at startup, so without ours it keeps the GTK fallback, which
+        // can't screencast. Stop it; D-Bus activation starts it again with our environment.
+        init_system_import.push_str(
+            "systemctl --user -q is-active xdg-desktop-portal.service && \
+             systemctl --user --no-block stop xdg-desktop-portal.service;",
+        );
     }
     if cfg!(feature = "dinit") {
         write!(init_system_import, "dinitctl setenv {variables};").unwrap();
