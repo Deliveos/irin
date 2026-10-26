@@ -329,10 +329,8 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
-        continue-on-error: true
 
       - run: nix flake check
-        continue-on-error: true
 
   publish-wiki:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'niri-wm/niri'
