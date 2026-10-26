@@ -6,6 +6,7 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::space::SpaceElement as _;
+use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::desktop::{PopupKind, PopupManager, Window};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
@@ -123,6 +124,16 @@ pub struct Mapped {
 
     /// Snapshot right before an animated commit, without popups.
     animation_snapshot: Option<LayoutElementRenderSnapshot>,
+
+    /// Whether an animated configure was sent since the last `store_configure_snapshot()`.
+    needs_configure_snapshot: bool,
+
+    /// Snapshot from when the first unanswered animated configure was sent, without popups.
+    ///
+    /// Used instead of the snapshot on the commit, which can mix the old and the new state: a
+    /// client can resize its desynchronized subsurfaces before it commits the toplevel (Firefox
+    /// does this).
+    configure_snapshot: Option<LayoutElementRenderSnapshot>,
 
     /// State for the logic to request a size once (for floating windows).
     request_size_once: Option<RequestSizeOnce>,
@@ -312,6 +323,8 @@ impl Mapped {
             animate_next_configure: false,
             animate_serials: Vec::new(),
             animation_snapshot: None,
+            needs_configure_snapshot: false,
+            configure_snapshot: None,
             request_size_once: None,
             transaction_for_next_configure: None,
             pending_transactions: Vec::new(),
@@ -489,7 +502,47 @@ impl Mapped {
     }
 
     pub fn store_animation_snapshot(&mut self, renderer: &mut GlesRenderer) {
-        self.animation_snapshot = Some(self.render_snapshot(renderer));
+        let snapshot = self.configure_snapshot.take();
+        self.animation_snapshot = Some(snapshot.unwrap_or_else(|| self.render_snapshot(renderer)));
+    }
+
+    pub fn needs_configure_snapshot(&self) -> bool {
+        self.needs_configure_snapshot
+    }
+
+    /// Snapshots the window for the resize animation of a configure that was just sent.
+    ///
+    /// Call this before the configure is flushed to the client, so that the snapshot shows what is
+    /// on screen.
+    pub fn store_configure_snapshot(&mut self, renderer: &mut GlesRenderer) {
+        self.needs_configure_snapshot = false;
+        // Keep the snapshot from the first animated configure that the window hasn't answered.
+        if self.configure_snapshot.is_some() {
+            return;
+        }
+
+        // Rendering costs a texture, so do it only for windows on screen; the others get their
+        // snapshot on commit. Check every surface, since subsurfaces can cover the toplevel.
+        let mut output = None;
+        self.window.with_surfaces(|surface, states| {
+            output = output
+                .take()
+                .or_else(|| surface_primary_scanout_output(surface, states));
+        });
+        let Some(output) = output else {
+            return;
+        };
+        let scale = Scale::from(output.current_scale().fractional_scale());
+
+        let snapshot = self.render_snapshot(renderer);
+        // Render it right away, since the client may draw into these buffers before it commits.
+        let ctx = RenderCtx {
+            renderer,
+            target: RenderTarget::Output,
+            xray: None,
+        };
+        snapshot.texture(ctx, scale);
+        self.configure_snapshot = Some(snapshot);
     }
 
     pub fn take_pending_transaction(&mut self, commit_serial: Serial) -> Option<Transaction> {
@@ -1175,6 +1228,7 @@ impl LayoutElement for Mapped {
 
             if self.animate_next_configure {
                 self.animate_serials.push(serial);
+                self.needs_configure_snapshot = true;
             }
 
             if let Some(transaction) = self.transaction_for_next_configure.take() {

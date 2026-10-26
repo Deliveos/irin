@@ -5,12 +5,16 @@ use insta::assert_snapshot;
 use niri_config::animations::{Curve, EasingParams, Kind};
 use niri_config::Config;
 use niri_ipc::SizeChange;
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::{Bind as _, Color32F, ExportMem as _};
 use smithay::utils::{Point, Size};
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
 use super::*;
-use crate::niri::Niri;
+use crate::niri::{Niri, State};
+use crate::render_helpers::{copy_framebuffer, create_texture, RenderCtx, RenderTarget};
 
 fn format_tiles(niri: &Niri) -> String {
     let mut buf = String::new();
@@ -83,6 +87,42 @@ fn set_up() -> Fixture {
     f.add_output(1, (1920, 1080));
 
     f
+}
+
+// Renders output 1 the way a backend does, including the visibility tracking, and returns the
+// pixels as RGBA.
+fn render_output(f: &mut Fixture) -> Vec<u8> {
+    let output = f.niri_output(1);
+    let State { backend, niri, .. } = f.niri_state();
+    niri.update_render_elements(Some(&output));
+
+    backend
+        .with_primary_renderer(|renderer| {
+            let ctx = RenderCtx {
+                renderer: &mut *renderer,
+                target: RenderTarget::Output,
+                xray: None,
+            };
+            let elements = niri.render_to_vec(ctx, &output, false);
+
+            let mut damage_tracker = OutputDamageTracker::from_output(&output);
+            let size = Size::from((1920, 1080));
+            let mut texture = create_texture(renderer, size, Fourcc::Abgr8888).unwrap();
+            let mut target = renderer.bind(&mut texture).unwrap();
+            let res = damage_tracker
+                .render_output(renderer, &mut target, 0, &elements, Color32F::TRANSPARENT)
+                .unwrap();
+            niri.update_primary_scanout_output(&output, &res.states);
+
+            let mapping = copy_framebuffer(renderer, &target, Fourcc::Abgr8888).unwrap();
+            renderer.map_texture(&mapping).unwrap().to_vec()
+        })
+        .unwrap()
+}
+
+fn pixel(pixels: &[u8], x: usize, y: usize) -> [u8; 3] {
+    let i = (y * 1920 + x) * 4;
+    [pixels[i], pixels[i + 1], pixels[i + 2]]
 }
 
 fn set_up_two_in_column() -> (Fixture, ClientId, WlSurface, WlSurface) {
@@ -187,4 +227,55 @@ fn egl_clientside_height_change_doesnt_animate() {
     100 ×  50 at x:  0 y:  0
     200 × 200 at x:  0 y: 50
     ");
+}
+
+#[test]
+fn egl_resize_animation_starts_from_what_was_on_screen() {
+    const FRAME: [u8; 3] = [0, 0, 255];
+    const CONTENT: [u8; 3] = [0, 255, 0];
+
+    let mut f = set_up();
+    let id = f.add_client();
+
+    // Like Firefox, the window draws its contents on a desynchronized subsurface.
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+    let (content, subsurface) = f.client(id).state.create_subsurface(&surface);
+    subsurface.set_desync();
+
+    let resize = |f: &mut Fixture, w: i32| {
+        let client = f.client(id);
+        // The contents change size first, and only then the window acks the configure.
+        client.state.attach_shm_buffer(&content, w, 1080, CONTENT);
+        content.commit();
+        client.state.attach_shm_buffer(&surface, w, 1080, FRAME);
+        let window = client.window(&surface);
+        window.set_size(w as u16, 1080);
+        window.ack_last_and_commit();
+        f.roundtrip(id);
+    };
+
+    resize(&mut f, 960);
+    f.double_roundtrip(id);
+    set_time(f.niri(), Duration::ZERO);
+    f.niri_complete_animations();
+    render_output(&mut f);
+
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    resize(&mut f, 1920);
+    f.niri_complete_animations();
+    let pixels = render_output(&mut f);
+    assert_eq!(pixel(&pixels, 1440, 540), CONTENT);
+
+    // Back to half width. At the start of the animation, the window should look the way it did
+    // before the resize, not like the full-size frame with the half-size contents.
+    f.niri().layout.toggle_full_width();
+    f.double_roundtrip(id);
+    resize(&mut f, 960);
+    let pixels = render_output(&mut f);
+    assert_eq!(pixel(&pixels, 480, 540), CONTENT);
+    assert_eq!(pixel(&pixels, 1440, 540), CONTENT);
 }
