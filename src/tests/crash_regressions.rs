@@ -58,8 +58,15 @@ fn clipboard_writes_are_bounded() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
 
-    let count = || std::fs::read_dir("/proc/self/task").unwrap().count();
-    let before = count();
+    // Count only the writer threads, since other tests start threads in parallel. The name is
+    // "Selection Writer", cut to the 15 bytes that Linux keeps.
+    let writers = || {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+            .filter(|comm| comm.trim_end() == "Selection Write")
+            .count()
+    };
 
     // A 1 MiB "screenshot" in our clipboard, bigger than a pipe buffer.
     let data: Arc<[u8]> = Arc::from(vec![0u8; 1 << 20].into_boxed_slice());
@@ -79,7 +86,7 @@ fn clipboard_writes_are_bounded() {
     }
     std::thread::sleep(Duration::from_millis(500));
 
-    let stuck = count() - before;
+    let stuck = writers();
     assert!(stuck < 50, "{stuck} threads stuck writing clipboard data");
 }
 
