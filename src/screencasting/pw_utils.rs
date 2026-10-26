@@ -1038,20 +1038,12 @@ impl Cast {
 
     pub fn record_frame_time(&mut self, recorded: Duration) {
         let interval = self.inner.borrow().min_time_between_frames;
-        let ideal = self.last_frame_time + interval;
-
-        // Absorb small (< 1 frame) differences in output refresh interval vs. screencast framerate
-        // to keep the screencast time base consistent instead of shifting forward every frame.
-        //
-        // After a missed interval or a rate change, restart instead of catching up in a burst.
-        self.last_frame_time = if self.last_frame_interval == interval
-            && recorded >= self.last_frame_time
-            && recorded < ideal + interval
-        {
-            ideal
-        } else {
-            recorded
-        };
+        self.last_frame_time = paced_frame_time(
+            self.last_frame_time,
+            self.last_frame_interval,
+            interval,
+            recorded,
+        );
         self.last_frame_interval = interval;
     }
 
@@ -1789,6 +1781,30 @@ enum SharingBuf {
     Shm(ShmLayout),
 }
 
+/// Returns the time to pace the next cast frame from, after a frame recorded at `recorded`.
+fn paced_frame_time(
+    last: Duration,
+    last_interval: Duration,
+    interval: Duration,
+    recorded: Duration,
+) -> Duration {
+    let ideal = last + interval;
+
+    // Absorb small (< 1 frame) differences in output refresh interval vs. screencast framerate
+    // to keep the screencast time base consistent instead of shifting forward every frame.
+    //
+    // Only a late frame moves back to the ideal time. An early one (within the delay allowance)
+    // keeps its own: moving it forward would put the time base after the frame, and a second
+    // redraw for the same target would then look like time going backwards.
+    //
+    // After a missed interval or a rate change, restart instead of catching up in a burst.
+    if last_interval == interval && recorded >= ideal && recorded < ideal + interval {
+        ideal
+    } else {
+        recorded
+    }
+}
+
 fn allocate_shmbuf(size: Size<u32, Physical>) -> anyhow::Result<Shmbuf> {
     let layout = ShmLayout::new(size)?;
     let fd = memfd_create(
@@ -2049,6 +2065,31 @@ fn clear_shmbuf(buffer: &Shmbuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paced_frame_time_never_runs_ahead_of_the_frame() {
+        let ms = Duration::from_millis;
+        let us = Duration::from_micros;
+        let interval = us(16_667);
+        let last = ms(1000);
+
+        // A late frame keeps the cadence.
+        let late = last + interval + ms(3);
+        assert_eq!(
+            paced_frame_time(last, interval, interval, late),
+            last + interval
+        );
+
+        // An early frame keeps its own time, so a second redraw for the same target isn't
+        // before it.
+        let early = last + interval - us(50);
+        assert_eq!(paced_frame_time(last, interval, interval, early), early);
+
+        // A missed interval or a rate change restarts.
+        let missed = last + interval * 2 + us(1);
+        assert_eq!(paced_frame_time(last, interval, interval, missed), missed);
+        assert_eq!(paced_frame_time(last, ms(33), interval, late), late);
+    }
 
     #[test]
     fn shm_layout_uses_spa_representable_dimensions() {
