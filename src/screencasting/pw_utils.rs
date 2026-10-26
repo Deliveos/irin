@@ -1436,21 +1436,7 @@ impl Cast {
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
             let mut inner = self.inner.borrow_mut();
-            // The damage above counts as sent; reset so the next frame is full and nothing is lost.
-            if let CastState::Ready {
-                damage_trackers,
-                cursor_damage_tracker,
-                last_cursor_location,
-                ..
-            } = &mut inner.state
-            {
-                *damage_trackers = None;
-                // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
-                if redraw_cursor {
-                    *cursor_damage_tracker = None;
-                }
-                *last_cursor_location = None;
-            }
+            inner.forget_unsent_frame(redraw_cursor);
             inner.note_no_buffer();
             drop(inner);
             self.schedule_retry();
@@ -1554,6 +1540,7 @@ impl Cast {
                 Err(err) => {
                     warn!("error rendering to buffer: {err:?}");
                     return_unused_buffer(&self.stream, pw_buffer);
+                    self.inner.borrow_mut().forget_unsent_frame(redraw_cursor);
                     false
                 }
             }
@@ -1626,6 +1613,26 @@ impl Cast {
 }
 
 impl CastInner {
+    /// Resets what a frame that didn't reach the consumer counted as sent, so that the next frame
+    /// is full and nothing is lost.
+    fn forget_unsent_frame(&mut self, redraw_cursor: bool) {
+        if let CastState::Ready {
+            damage_trackers,
+            cursor_damage_tracker,
+            last_cursor_location,
+            ..
+        } = &mut self.state
+        {
+            // Both trackers: the check tracker already counts the frame's damage.
+            *damage_trackers = None;
+            // Only when the cursor bitmap changed, since redrawing it waits for the GPU.
+            if redraw_cursor {
+                *cursor_damage_tracker = None;
+            }
+            *last_cursor_location = None;
+        }
+    }
+
     /// Logs a skipped frame, warning at most once per `WARNING_INTERVAL`, since a slow consumer
     /// can hit this on every other frame.
     fn note_no_buffer(&mut self) {
@@ -1942,8 +1949,13 @@ fn paced_frame_time(
     // keeps its own: moving it forward would put the time base after the frame, and a second
     // redraw for the same target would then look like time going backwards.
     //
+    // A frame late by almost a whole interval restarts too: moved back, it would leave less than
+    // the delay allowance until the next frame is due, so a second redraw for the same target
+    // would go out as well.
+    //
     // After a missed interval or a rate change, restart instead of catching up in a burst.
-    if last_interval == interval && recorded >= ideal && recorded < ideal + interval {
+    let late_limit = interval.saturating_sub(CAST_DELAY_ALLOWANCE);
+    if last_interval == interval && recorded >= ideal && recorded < ideal + late_limit {
         ideal
     } else {
         recorded
@@ -2264,6 +2276,19 @@ mod tests {
         let missed = last + interval * 2 + us(1);
         assert_eq!(paced_frame_time(last, interval, interval, missed), missed);
         assert_eq!(paced_frame_time(last, ms(33), interval, late), late);
+
+        // Whenever the frame went out, the time base isn't after it, and a second redraw for the
+        // same target is too soon by at least the allowance, so it isn't sent.
+        let mut recorded = last;
+        while recorded < last + interval * 3 {
+            let paced = paced_frame_time(last, interval, interval, recorded);
+            assert!(paced <= recorded, "{recorded:?}");
+            assert!(
+                paced + interval - recorded >= CAST_DELAY_ALLOWANCE,
+                "{recorded:?}"
+            );
+            recorded += us(7);
+        }
     }
 
     #[test]
