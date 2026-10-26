@@ -1342,6 +1342,7 @@ impl Cast {
             return false;
         }
         *last_cursor_location = Some(cursor_data.location);
+        let cursor_only = damage.is_none();
         drop(inner);
 
         let Some(pw_buffer) = self.dequeue_available_buffer() else {
@@ -1369,6 +1370,17 @@ impl Cast {
         self.remove_retry_redraw();
         let buffer = pw_buffer.as_ptr();
 
+        // Only the cursor changed, so send just its metadata instead of rendering the frame again.
+        if cursor_only {
+            unsafe {
+                add_cursor_metadata(renderer, (*buffer).buffer, cursor_data, redraw_cursor);
+                mark_buffer_as_metadata_only(pw_buffer, &mut self.sequence_counter);
+                trace!("queueing cursor buffer with seq={}", self.sequence_counter);
+                self.queue_after_sync(pw_buffer, SyncPoint::signaled());
+            }
+            return true;
+        }
+
         let mut inner = self.inner.borrow_mut();
         let inner_ = &mut *inner;
         let CastState::Ready {
@@ -1389,9 +1401,6 @@ impl Cast {
                 add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor);
             }
 
-            // FIXME: would be good to skip rendering the full frame if only the pointer changed.
-            // Unfortunately, I think the OBS PipeWire code needs to be updated first to cleanly
-            // allow for that codepath.
             let fd = (*(*spa_buffer).datas).fd;
 
             let res = match (*(*spa_buffer).datas).type_ {
@@ -1863,6 +1872,28 @@ unsafe fn mark_buffer_as_good(pw_buffer: NonNull<pw_buffer>, sequence: &mut u64,
         // FIXME: we could try passing real presentation timestamps for rendered frames here.
         // However, then we must also ensure that the time base never jumps (e.g. when switching a
         // dynamic cast between outputs) as this would mess up the timing downstream.
+        (*header).pts = -1;
+    }
+}
+
+/// Marks the buffer as carrying no new frame, only metadata like a cursor update.
+///
+/// Consumers keep the previous frame: OBS skips the frame of a buffer with an empty chunk, and
+/// libwebrtc skips the frame of a buffer with a corrupted chunk (it would import a DMA-BUF of any
+/// size). Both read the cursor metadata first. A corrupted header would make OBS drop the cursor
+/// update too, so the header stays clean.
+unsafe fn mark_buffer_as_metadata_only(pw_buffer: NonNull<pw_buffer>, sequence: &mut u64) {
+    let pw_buffer = pw_buffer.as_ptr();
+    let spa_buffer = (*pw_buffer).buffer;
+    let chunk = (*(*spa_buffer).datas).chunk;
+    (*chunk).size = 0;
+    (*chunk).flags = SPA_CHUNK_FLAG_CORRUPTED as i32;
+
+    *sequence = sequence.wrapping_add(1);
+    if let Some(header) = find_meta_header(spa_buffer) {
+        let header = header.as_ptr();
+        (*header).flags = 0;
+        (*header).seq = *sequence;
         (*header).pts = -1;
     }
 }
