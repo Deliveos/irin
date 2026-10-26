@@ -2429,9 +2429,13 @@ impl State {
                 output.scale = new.scale;
                 output.transform = new.transform;
                 output.position = new.position;
-                output.mode = new.mode;
-                // A modeline takes precedence over the mode.
-                output.modeline = None;
+                // No mode means the client sent back the current one. Keep the entry's, which can
+                // be a custom mode or a modeline that DisplayConfig can't express.
+                if new.mode.is_some() {
+                    output.mode = new.mode;
+                    // A modeline takes precedence over the mode.
+                    output.modeline = None;
+                }
             });
         }
         self.reload_output_config();

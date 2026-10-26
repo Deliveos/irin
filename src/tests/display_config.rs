@@ -38,3 +38,29 @@ fn display_config_keeps_entry_name_and_other_settings() {
     assert!(output.variable_refresh_rate.is_some());
     assert!(output.focus_at_startup);
 }
+
+#[test]
+fn display_config_keeps_a_custom_mode_sent_back() {
+    let config =
+        Config::parse_mem(r#"output "headless-1" { mode custom=true "1920x1080@50"; }"#).unwrap();
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+
+    // What ApplyMonitorsConfig sends for a scale change when the client sent back the current
+    // mode: no mode.
+    let new = niri_config::Output {
+        name: String::from("headless-1"),
+        scale: Some(FloatOrInt(1.5)),
+        position: Some(niri_config::Position { x: 0, y: 0 }),
+        mode: None,
+        ..Default::default()
+    };
+    let new_conf = HashMap::from([(String::from("headless-1"), Some(new))]);
+    f.niri_state().on_display_config_msg(new_conf);
+
+    let config = f.niri().config.borrow();
+    let [entry] = &config.outputs.0[..] else {
+        panic!("{:?}", config.outputs);
+    };
+    assert!(entry.mode.as_ref().is_some_and(|mode| mode.custom));
+}

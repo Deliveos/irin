@@ -628,15 +628,20 @@ where
                     return;
                 };
 
-                new_config.mode = Some(niri_config::output::Mode {
-                    custom: false,
-                    mode: niri_ipc::ConfiguredMode {
-                        width: mode.width,
-                        height: mode.height,
-                        refresh: Some(mode.refresh_rate as f64 / 1000.),
-                    },
-                });
-                new_config.modeline = None;
+                // A client that changes something else may send back the current mode. Keep the
+                // entry's then, which can be a custom mode or a modeline that the head's mode
+                // list can't express.
+                if current_config.current_mode != Some(index) {
+                    new_config.mode = Some(niri_config::output::Mode {
+                        custom: false,
+                        mode: niri_ipc::ConfiguredMode {
+                            width: mode.width,
+                            height: mode.height,
+                            refresh: Some(mode.refresh_rate as f64 / 1000.),
+                        },
+                    });
+                    new_config.modeline = None;
+                }
             }
             zwlr_output_configuration_head_v1::Request::SetCustomMode {
                 width,

@@ -103,7 +103,7 @@ impl DisplayConfig {
                     let refresh_rate = refresh_rate as f64 / 1000.;
 
                     Mode {
-                        id: format!("{width}x{height}@{refresh_rate:.3}"),
+                        id: mode_id(m),
                         width,
                         height,
                         refresh_rate,
@@ -191,11 +191,28 @@ impl DisplayConfig {
                 ));
             }
             for (connector, mode, _props) in requested_config.monitors {
-                if !current_conf.values().any(|o| o.name == connector) {
+                let Some(current) = current_conf.values().find(|o| o.name == connector) else {
                     return Err(zbus::fdo::Error::Failed(format!(
                         "Connector '{connector}' not found",
                     )));
-                }
+                };
+                // A client that changes something else sends back the current mode. Leave the
+                // mode out then (niri keeps the config entry's), since a custom mode or a modeline
+                // doesn't survive the round trip through a mode id.
+                let is_current = current
+                    .current_mode
+                    .and_then(|i| current.modes.get(i))
+                    .is_some_and(|m| mode_id(m) == mode);
+                let mode = if is_current {
+                    None
+                } else {
+                    Some(niri_config::output::Mode {
+                        custom: false,
+                        mode: niri_ipc::ConfiguredMode::from_str(&mode).map_err(|e| {
+                            zbus::fdo::Error::Failed(format!("Could not parse mode '{mode}': {e}"))
+                        })?,
+                    })
+                };
                 new_conf.insert(
                     connector.clone(),
                     Some(niri_config::Output {
@@ -221,14 +238,7 @@ impl DisplayConfig {
                             x: requested_config.x,
                             y: requested_config.y,
                         }),
-                        mode: Some(niri_config::output::Mode {
-                            custom: false,
-                            mode: niri_ipc::ConfiguredMode::from_str(&mode).map_err(|e| {
-                                zbus::fdo::Error::Failed(format!(
-                                    "Could not parse mode '{mode}': {e}"
-                                ))
-                            })?,
-                        }),
+                        mode,
                         // FIXME: VRR
                         ..Default::default()
                     }),
@@ -308,6 +318,11 @@ impl Start for DisplayConfig {
     }
 }
 
+fn mode_id(mode: &niri_ipc::Mode) -> String {
+    let refresh_rate = mode.refresh_rate as f64 / 1000.;
+    format!("{}x{}@{refresh_rate:.3}", mode.width, mode.height)
+}
+
 // Adapted from Mutter.
 fn make_display_name(output: &niri_ipc::Output, is_laptop_panel: bool) -> String {
     if is_laptop_panel {
@@ -374,6 +389,59 @@ mod tests {
             let err = apply(scale).unwrap_err();
             assert!(err.to_string().contains("Invalid scale"), "{scale}: {err}");
         }
+    }
+
+    #[test]
+    fn apply_leaves_out_the_current_mode() {
+        let mode = |refresh_rate| niri_ipc::Mode {
+            width: 2560,
+            height: 1440,
+            refresh_rate,
+            is_preferred: false,
+        };
+        // A custom mode is listed first and is current.
+        let output = niri_ipc::Output {
+            name: String::from("DP-1"),
+            make: String::from("Make"),
+            model: String::from("Model"),
+            serial: None,
+            physical_size: None,
+            modes: vec![mode(74_968), mode(59_951)],
+            current_mode: Some(0),
+            is_custom_mode: true,
+            vrr_supported: false,
+            vrr_enabled: false,
+            logical: None,
+            max_bpc: None,
+        };
+        let outputs = HashMap::from([(crate::backend::OutputId::next(), output)]);
+        let (to_niri, from_display_config) = calloop::channel::channel();
+        let display_config = DisplayConfig::new(to_niri, Arc::new(Mutex::new(outputs)));
+
+        let apply = |mode: &str| {
+            let config = LogicalMonitorConfiguration {
+                x: 0,
+                y: 0,
+                scale: 1.,
+                transform: 0,
+                _is_primary: true,
+                monitors: vec![(String::from("DP-1"), String::from(mode), HashMap::new())],
+            };
+            async_io::block_on(display_config.apply_monitors_config(
+                0,
+                1,
+                vec![config],
+                HashMap::new(),
+            ))
+            .unwrap();
+            let mut sent = from_display_config.try_recv().unwrap();
+            sent.remove("DP-1").unwrap().unwrap().mode
+        };
+
+        assert_eq!(apply("2560x1440@74.968"), None);
+        let other = apply("2560x1440@59.951").unwrap();
+        assert!(!other.custom);
+        assert_eq!(other.mode.refresh, Some(59.951));
     }
 
     #[test]
