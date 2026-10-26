@@ -1881,8 +1881,13 @@ fn paced_frame_time(
     // keeps its own: moving it forward would put the time base after the frame, and a second
     // redraw for the same target would then look like time going backwards.
     //
+    // A frame late by almost a whole interval restarts too: moved back, it would leave less than
+    // the delay allowance until the next frame is due, so a second redraw for the same target
+    // would go out as well.
+    //
     // After a missed interval or a rate change, restart instead of catching up in a burst.
-    if last_interval == interval && recorded >= ideal && recorded < ideal + interval {
+    let late_limit = interval.saturating_sub(CAST_DELAY_ALLOWANCE);
+    if last_interval == interval && recorded >= ideal && recorded < ideal + late_limit {
         ideal
     } else {
         recorded
@@ -2210,6 +2215,19 @@ mod tests {
         let missed = last + interval * 2 + us(1);
         assert_eq!(paced_frame_time(last, interval, interval, missed), missed);
         assert_eq!(paced_frame_time(last, ms(33), interval, late), late);
+
+        // Whenever the frame went out, the time base isn't after it, and a second redraw for the
+        // same target is too soon by at least the allowance, so it isn't sent.
+        let mut recorded = last;
+        while recorded < last + interval * 3 {
+            let paced = paced_frame_time(last, interval, interval, recorded);
+            assert!(paced <= recorded, "{recorded:?}");
+            assert!(
+                paced + interval - recorded >= CAST_DELAY_ALLOWANCE,
+                "{recorded:?}"
+            );
+            recorded += us(7);
+        }
     }
 
     #[test]
