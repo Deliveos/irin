@@ -1,14 +1,16 @@
+use std::os::fd::OwnedFd;
 use std::ptr;
 
 use anyhow::{bail, ensure, Context as _};
 use niri_config::BlockOutFrom;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Fourcc};
+use smithay::backend::egl::fence::EGLFence;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::element::{Element, Kind, RenderElement, RenderElementStates};
 use smithay::backend::renderer::gles::{
-    GlesError, GlesMapping, GlesRenderer, GlesTarget, GlesTexture,
+    Capability, GlesError, GlesMapping, GlesRenderer, GlesTarget, GlesTexture,
 };
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{
@@ -291,7 +293,7 @@ pub fn render_and_download_with_damage(
     fourcc: Fourcc,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
-) -> anyhow::Result<GlesMapping> {
+) -> anyhow::Result<PendingDownload> {
     let _span = tracy_client::span!();
 
     let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
@@ -311,7 +313,75 @@ pub fn render_and_download_with_damage(
         )
         .context("error rendering")?;
 
-    copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")
+    start_download(renderer, &target, fourcc)
+}
+
+/// Pixels on their way back from the GPU.
+#[derive(Debug)]
+pub struct PendingDownload {
+    mapping: GlesMapping,
+    context_id: ContextId<GlesTexture>,
+    /// Reached once the GPU finished the readback, if fences are supported.
+    sync: Option<SyncPoint>,
+}
+
+impl PendingDownload {
+    /// Returns an fd that becomes readable when [`Self::map()`] no longer waits for the GPU.
+    ///
+    /// `None` without fence support; then `map()` waits for the GPU.
+    pub fn sync_fd(&self) -> Option<OwnedFd> {
+        self.sync.as_ref().and_then(SyncPoint::export)
+    }
+
+    /// Returns the sync point reached when the readback is done, signaled without fences.
+    pub fn sync_point(&self) -> SyncPoint {
+        self.sync.clone().unwrap_or_else(SyncPoint::signaled)
+    }
+
+    pub fn map<'a>(&'a self, renderer: &mut GlesRenderer) -> anyhow::Result<&'a [u8]> {
+        // The mapping belongs to the renderer that rendered the frame.
+        ensure!(
+            renderer.context_id() == self.context_id,
+            "renderer changed during the download"
+        );
+        renderer
+            .map_texture(&self.mapping)
+            .context("error mapping texture")
+    }
+}
+
+/// Starts reading the target back from the GPU, without waiting for it.
+fn start_download(
+    renderer: &mut GlesRenderer,
+    target: &GlesTarget,
+    fourcc: Fourcc,
+) -> anyhow::Result<PendingDownload> {
+    let mapping =
+        copy_framebuffer(renderer, target, fourcc).context("error copying framebuffer")?;
+    let context_id = renderer.context_id();
+
+    // A fence after the readback tells when mapping it stops blocking.
+    let mut sync = None;
+    if renderer.capabilities().contains(&Capability::ExportFence) {
+        let display = renderer.egl_context().display().clone();
+        let fence = renderer.with_context(|gl| {
+            let fence = EGLFence::create(&display);
+            // The fence only gets an fd once it's flushed.
+            unsafe { gl.Flush() };
+            fence
+        });
+        match fence {
+            Ok(Ok(fence)) => sync = Some(SyncPoint::from(fence)),
+            Ok(Err(err)) => debug!("error creating fence for download: {err:?}"),
+            Err(err) => debug!("error flushing for download: {err:?}"),
+        }
+    }
+
+    Ok(PendingDownload {
+        mapping,
+        context_id,
+        sync,
+    })
 }
 
 pub fn render_to_vec(
@@ -362,7 +432,27 @@ pub fn render_to_dmabuf(
     Ok(res.sync)
 }
 
-pub fn render_to_shm(
+/// A frame rendered for a capture client's buffer, but not in it yet.
+pub enum PendingCapture {
+    /// In the client's DMA-BUF once the sync point is reached.
+    Dma(SyncPoint),
+    /// To be copied into the client's SHM buffer once the GPU is done.
+    Shm(PendingShmCopy),
+}
+
+/// A frame rendered for an SHM buffer, waiting to be copied into it.
+#[derive(Debug)]
+pub struct PendingShmCopy {
+    download: PendingDownload,
+    buffer: WlBuffer,
+    format: wl_shm::Format,
+    size: Size<i32, Physical>,
+}
+
+/// Renders a frame for the SHM `buffer` and starts reading it back from the GPU.
+///
+/// [`PendingShmCopy::finish()`] then copies it into the buffer.
+pub fn render_for_shm(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
     texture: &mut CaptureTexture,
@@ -370,87 +460,121 @@ pub fn render_to_shm(
     format: wl_shm::Format,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PendingShmCopy> {
     let _span = tracy_client::span!();
-    // The pointer and length are the client's entire pool, which may hold other
-    // buffers besides this one... buffer_data is the one we want.
-    shm::with_buffer_contents_mut(buffer, |pool, pool_len, buffer_data| {
-        let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
-        let fourcc = match format {
-            wl_shm::Format::Xrgb8888 => Fourcc::Xrgb8888,
-            wl_shm::Format::Argb8888 => Fourcc::Argb8888,
-            _ => bail!("unsupported shm format: {format:?}"),
-        };
 
-        ensure!(
-            // The buffer prefers pixels in little endian ...
-            buffer_data.format == format
-                && buffer_data.width == size.w
-                && buffer_data.height == size.h,
-            "invalid buffer format or size"
-        );
+    let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
+    let fourcc = match format {
+        wl_shm::Format::Xrgb8888 => Fourcc::Xrgb8888,
+        wl_shm::Format::Argb8888 => Fourcc::Argb8888,
+        _ => bail!("unsupported shm format: {format:?}"),
+    };
+    shm::with_buffer_contents(buffer, |_, pool_len, buffer_data| {
+        check_shm_buffer(buffer_data, pool_len, format, size)
+    })
+    .context("expected shm buffer, but didn't get one")??;
 
-        // The client chooses the stride and may pad rows, so only the first
-        // row_len bytes can be used here.
-        let row_len = size.w as usize * 4;
-        let height = size.h as usize;
-        let offset = usize::try_from(buffer_data.offset).context("negative buffer offset")?;
-        let stride = usize::try_from(buffer_data.stride).context("negative buffer stride")?;
+    let texture = texture
+        .get(renderer, size, fourcc)
+        .context("error creating texture")?;
+    let mut target = renderer.bind(texture).context("error binding texture")?;
 
-        // This should have already been validated by wl_shm, and a pool can
-        // only grow, but check again just in case.
-        let end = stride
-            .checked_mul(height.saturating_sub(1))
-            .and_then(|len| len.checked_add(row_len))
-            .and_then(|len| len.checked_add(offset));
-        ensure!(
-            stride >= row_len && end.is_some_and(|end| end <= pool_len),
-            "buffer does not fit in its shm pool"
-        );
+    let _res = damage_tracker
+        .render_output_with_states(
+            renderer,
+            &mut target,
+            0,
+            elements,
+            Color32F::TRANSPARENT,
+            states,
+        )
+        .context("error rendering")?;
 
-        let texture = texture
-            .get(renderer, size, fourcc)
-            .context("error creating texture")?;
-        let mut target = renderer.bind(texture).context("error binding texture")?;
+    Ok(PendingShmCopy {
+        download: start_download(renderer, &target, fourcc)?,
+        buffer: buffer.clone(),
+        format,
+        size,
+    })
+}
 
-        let _res = damage_tracker
-            .render_output_with_states(
-                renderer,
-                &mut target,
-                0,
-                elements,
-                Color32F::TRANSPARENT,
-                states,
-            )
-            .context("error rendering")?;
+impl PendingShmCopy {
+    /// See [`PendingDownload::sync_fd()`].
+    pub fn sync_fd(&self) -> Option<OwnedFd> {
+        self.download.sync_fd()
+    }
 
-        let mapping =
-            copy_framebuffer(renderer, &target, fourcc).context("error copying framebuffer")?;
-        let bytes = renderer
-            .map_texture(&mapping)
-            .context("error mapping texture")?;
+    /// Copies the frame into the buffer, waiting for the GPU if it isn't done yet.
+    pub fn finish(self, renderer: &mut GlesRenderer) -> anyhow::Result<()> {
+        let _span = tracy_client::span!("PendingShmCopy::finish");
 
-        ensure!(bytes.len() >= row_len * height, "short texture mapping");
+        let bytes = self.download.map(renderer)?;
+        let size = self.size;
 
-        unsafe {
-            let _span = tracy_client::span!("copy_nonoverlapping");
-            let dst = pool.add(offset);
-            if stride == row_len {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), dst, row_len * height);
-            } else {
-                for y in 0..height {
-                    ptr::copy_nonoverlapping(
-                        bytes.as_ptr().add(y * row_len),
-                        dst.add(y * stride),
-                        row_len,
-                    );
+        // The pointer and length are the client's entire pool, which may hold other
+        // buffers besides this one... buffer_data is the one we want.
+        shm::with_buffer_contents_mut(&self.buffer, |pool, pool_len, buffer_data| {
+            let (offset, stride) = check_shm_buffer(buffer_data, pool_len, self.format, size)?;
+
+            let row_len = size.w as usize * 4;
+            let height = size.h as usize;
+            ensure!(bytes.len() >= row_len * height, "short texture mapping");
+
+            unsafe {
+                let _span = tracy_client::span!("copy_nonoverlapping");
+                let dst = pool.add(offset);
+                if stride == row_len {
+                    ptr::copy_nonoverlapping(bytes.as_ptr(), dst, row_len * height);
+                } else {
+                    for y in 0..height {
+                        ptr::copy_nonoverlapping(
+                            bytes.as_ptr().add(y * row_len),
+                            dst.add(y * stride),
+                            row_len,
+                        );
+                    }
                 }
             }
-        }
 
-        Ok(())
-    })
-    .context("expected shm buffer, but didn't get one")?
+            Ok(())
+        })
+        .context("expected shm buffer, but didn't get one")?
+    }
+}
+
+/// Checks that the SHM buffer fits a frame of `size` in `format`, and returns its offset and
+/// stride.
+fn check_shm_buffer(
+    buffer_data: shm::BufferData,
+    pool_len: usize,
+    format: wl_shm::Format,
+    size: Size<i32, Physical>,
+) -> anyhow::Result<(usize, usize)> {
+    ensure!(
+        // The buffer prefers pixels in little endian ...
+        buffer_data.format == format && buffer_data.width == size.w && buffer_data.height == size.h,
+        "invalid buffer format or size"
+    );
+
+    // The client chooses the stride and may pad rows, so only the first
+    // row_len bytes can be used here.
+    let row_len = size.w as usize * 4;
+    let height = size.h as usize;
+    let offset = usize::try_from(buffer_data.offset).context("negative buffer offset")?;
+    let stride = usize::try_from(buffer_data.stride).context("negative buffer stride")?;
+
+    // This should have already been validated by wl_shm, and a pool can
+    // only grow, but check again just in case.
+    let end = stride
+        .checked_mul(height.saturating_sub(1))
+        .and_then(|len| len.checked_add(row_len))
+        .and_then(|len| len.checked_add(offset));
+    ensure!(
+        stride >= row_len && end.is_some_and(|end| end <= pool_len),
+        "buffer does not fit in its shm pool"
+    );
+
+    Ok((offset, stride))
 }
 
 pub fn clear_dmabuf(renderer: &mut GlesRenderer, mut dmabuf: Dmabuf) -> anyhow::Result<SyncPoint> {
@@ -514,13 +638,17 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn egl_capture_texture_is_reused_until_size_or_format_changes() {
-        let mut renderer = unsafe {
+    fn renderer() -> GlesRenderer {
+        unsafe {
             let display = EGLDisplay::new(EGLSurfacelessDisplay).unwrap();
             let context = EGLContext::new(&display).unwrap();
             GlesRenderer::new(context).unwrap()
-        };
+        }
+    }
+
+    #[test]
+    fn egl_capture_texture_is_reused_until_size_or_format_changes() {
+        let mut renderer = renderer();
 
         let mut texture = CaptureTexture::default();
         let size = Size::from((64, 32));
@@ -534,5 +662,40 @@ mod tests {
         assert_eq!(resized.size(), Size::from((32, 32)));
         let reformatted = texture.get(&mut renderer, size, Fourcc::Argb8888).unwrap();
         assert_eq!(reformatted.format(), Some(Fourcc::Argb8888));
+    }
+
+    #[test]
+    fn egl_download_has_the_rendered_pixels() {
+        let mut renderer = renderer();
+        let mut damage_tracker = OutputDamageTracker::new((4, 2), 1., Transform::Normal);
+        let mut texture = CaptureTexture::default();
+
+        // The second frame renders into the same texture.
+        for (color, expected) in [
+            (Color32F::new(1., 0., 0., 1.), [255, 0, 0, 255]),
+            (Color32F::new(0., 1., 0., 1.), [0, 255, 0, 255]),
+        ] {
+            let buffer = SolidColorBuffer::new((4., 2.), color);
+            let elements = [SolidColorRenderElement::from_buffer(
+                &buffer,
+                (0., 0.),
+                1.,
+                Kind::Unspecified,
+            )];
+            let download = render_and_download_with_damage(
+                &mut renderer,
+                &mut damage_tracker,
+                &mut texture,
+                Fourcc::Abgr8888,
+                &elements,
+                RenderElementStates::default(),
+            )
+            .unwrap();
+
+            // Abgr8888 is R, G, B, A in memory.
+            let bytes = download.map(&mut renderer).unwrap();
+            assert_eq!(bytes.len(), 4 * 2 * 4);
+            assert!(bytes.chunks(4).all(|px| px == expected), "{bytes:?}");
+        }
     }
 }

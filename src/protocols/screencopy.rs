@@ -589,6 +589,7 @@ where
             Screencopy {
                 buffer,
                 frame: frame.clone(),
+                manager: manager.clone(),
                 info: info.clone(),
                 with_damage,
                 submitted: false,
@@ -642,6 +643,7 @@ pub enum ScreencopyBuffer {
 pub struct Screencopy {
     info: ScreencopyFrameInfo,
     frame: ZwlrScreencopyFrameV1,
+    manager: ZwlrScreencopyManagerV1,
     buffer: ScreencopyBuffer,
     with_damage: bool,
     submitted: bool,
@@ -688,8 +690,13 @@ impl Screencopy {
         }
     }
 
+    /// The manager whose queue this screencopy belongs to.
+    pub fn manager(&self) -> &ZwlrScreencopyManagerV1 {
+        &self.manager
+    }
+
     /// Submit the copied content.
-    fn submit(mut self, y_invert: bool, timestamp: Duration) {
+    pub fn submit(mut self, y_invert: bool, timestamp: Duration) {
         // Notify client that buffer is ordinary.
         self.frame.flags(if y_invert {
             Flags::YInvert
