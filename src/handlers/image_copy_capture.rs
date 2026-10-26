@@ -5,10 +5,8 @@ use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::backend::drm::DrmNode;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::sync::SyncPoint;
 use smithay::output::{Output, WeakOutput};
-use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
+use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer;
 use smithay::reexports::wayland_server::protocol::wl_shm;
@@ -30,12 +28,15 @@ use wayland_backend::server::Credentials;
 
 use crate::cursor::{RenderCursor, XCursor};
 use crate::niri::{Niri, State};
-use crate::utils::{get_credentials_for_client, CastSessionId, CastStreamId};
+use crate::render_helpers::{CaptureTexture, PendingCapture};
+use crate::utils::{get_credentials_for_client, run_when_readable, CastSessionId, CastStreamId};
 
 /// Output capture session.
 pub struct ImageCopySession {
     pub session: Session,
     pub damage_tracker: OutputDamageTracker,
+    /// Offscreen texture for SHM frames.
+    pub texture: CaptureTexture,
     /// Frame waiting for output damage.
     pub pending_frame: Option<Frame>,
     /// Cast session id, shared with the cursor session of the same source.
@@ -51,6 +52,8 @@ pub struct ImageCopyCursorSession {
     pub session: CursorSession,
     /// Damage to the cursor image (i.e., not movement).
     pub damage_tracker: OutputDamageTracker,
+    /// Offscreen texture for SHM frames.
+    pub texture: CaptureTexture,
     /// Frame waiting for cursor image change.
     pub pending_frame: Option<Frame>,
     /// Cast session id, shared with the output session of the same source.
@@ -251,31 +254,54 @@ pub fn capture_buffer(
 /// Finishes a frame, waiting for `sync_point` first if the render is still in flight.
 ///
 /// Like `Screencopy::submit_after_sync()`.
-pub fn frame_success_after_sync<T>(
+/// Reports the frame as captured once it's in the client's buffer, without blocking on the GPU.
+///
+/// Returns an error, with the frame already failed, if finishing it right away failed. If it
+/// fails later, the session reports full damage on its next frame.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_frame(
     frame: Frame,
     transform: Transform,
     damage: Vec<Rectangle<i32, BufferCoords>>,
     presented: Duration,
-    sync_point: Option<SyncPoint>,
-    event_loop: &LoopHandle<'static, T>,
-) {
-    let Some(sync_fd) = sync_point.and_then(|sync| sync.export()) else {
-        frame.success(transform, damage, presented);
-        return;
-    };
-
-    let mut pending = Some((frame, damage));
-    let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
-    let res = event_loop.insert_source(source, move |_, _, _| {
-        let (frame, damage) = pending.take().unwrap();
-        frame.success(transform, damage, presented);
-        Ok(PostAction::Remove)
-    });
-    if let Err(err) = res {
-        // The client will retry (smithay sends an Unknown error when Drop is
-        // called on the Frame).
-        warn!("error waiting for image copy capture sync point: {err}");
+    pending: PendingCapture,
+    renderer: &mut GlesRenderer,
+    event_loop: &LoopHandle<'static, State>,
+    stream_id: CastStreamId,
+) -> anyhow::Result<()> {
+    match pending {
+        PendingCapture::Dma(sync) => match sync.export() {
+            None => frame.success(transform, damage, presented),
+            Some(sync_fd) => run_when_readable(event_loop, sync_fd, move |_| {
+                frame.success(transform, damage, presented);
+            }),
+        },
+        PendingCapture::Shm(copy) => match copy.sync_fd() {
+            None => {
+                if let Err(err) = copy.finish(renderer) {
+                    frame.fail(CaptureFailureReason::Unknown);
+                    return Err(err);
+                }
+                frame.success(transform, damage, presented);
+            }
+            Some(sync_fd) => run_when_readable(event_loop, sync_fd, move |state| {
+                let res = state
+                    .backend
+                    .with_primary_renderer(|renderer| copy.finish(renderer))
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("no renderer")));
+                match res {
+                    Ok(()) => frame.success(transform, damage, presented),
+                    Err(err) => {
+                        warn!("error copying image copy capture frame: {err:?}");
+                        frame.fail(CaptureFailureReason::Unknown);
+                        state.niri.reset_image_copy_damage(stream_id);
+                    }
+                }
+            }),
+        },
     }
+
+    Ok(())
 }
 
 impl ImageCaptureSourceHandler for State {}
@@ -330,6 +356,7 @@ impl ImageCopyCaptureHandler for State {
         self.niri.image_copy_sessions.push(ImageCopySession {
             session,
             damage_tracker,
+            texture: CaptureTexture::default(),
             pending_frame: None,
             session_id,
             stream_id: CastStreamId::next(),
@@ -347,6 +374,7 @@ impl ImageCopyCaptureHandler for State {
             .push(ImageCopyCursorSession {
                 session,
                 damage_tracker,
+                texture: CaptureTexture::default(),
                 pending_frame: None,
                 session_id,
                 stream_id: CastStreamId::next(),

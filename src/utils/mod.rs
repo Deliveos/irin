@@ -4,6 +4,7 @@ use std::ffi::{CString, OsStr};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::OwnedFd;
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
@@ -21,6 +22,8 @@ use smithay::backend::renderer::utils::{
 };
 use smithay::input::pointer::CursorIcon;
 use smithay::output::{self, Output};
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -349,6 +352,27 @@ pub fn write_atomically(
         let _ = std::fs::remove_file(&tmp);
     }
     res
+}
+
+/// Runs `f` in the event loop once `fd` becomes readable, for example when a GPU fence signals.
+///
+/// If that can't be set up, `f` is dropped along with whatever it captured.
+pub fn run_when_readable<T: 'static>(
+    event_loop: &LoopHandle<'static, T>,
+    fd: OwnedFd,
+    f: impl FnOnce(&mut T) + 'static,
+) {
+    let mut f = Some(f);
+    let source = Generic::new(fd, Interest::READ, Mode::OneShot);
+    let res = event_loop.insert_source(source, move |_, _, data| {
+        if let Some(f) = f.take() {
+            f(data);
+        }
+        Ok(PostAction::Remove)
+    });
+    if let Err(err) = res {
+        warn!("error waiting for an fd to become readable: {err}");
+    }
 }
 
 pub fn write_png_rgba8(

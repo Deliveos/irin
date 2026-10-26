@@ -25,6 +25,7 @@ use zwlr_screencopy_frame_v1::{Flags, ZwlrScreencopyFrameV1};
 use zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
 use crate::protocols::EmptyData;
+use crate::render_helpers::CaptureTexture;
 use crate::utils::{get_credentials_for_client, get_monotonic_time, CastSessionId, CastStreamId};
 
 const VERSION: u32 = 3;
@@ -44,6 +45,8 @@ pub struct ScreencopyQueue {
     /// Credentials of this wlr-screencopy client, if known.
     credentials: Option<Credentials>,
     damage_tracker: OutputDamageTracker,
+    /// Offscreen texture for SHM frames.
+    texture: CaptureTexture,
     /// Frames waiting for the client to call copy or destroy.
     pending_frames: HashSet<ZwlrScreencopyFrameV1>,
     /// Queue of screencopies waiting for a corresponding output redraw with damage.
@@ -95,6 +98,7 @@ impl ScreencopyQueue {
     pub fn new(credentials: Option<Credentials>) -> Self {
         Self {
             damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
+            texture: CaptureTexture::default(),
             pending_frames: HashSet::new(),
             screencopies: Vec::new(),
             cast: None,
@@ -115,13 +119,20 @@ impl ScreencopyQueue {
         self.credentials
     }
 
-    pub fn split(&mut self) -> (&mut OutputDamageTracker, Option<&Screencopy>) {
+    pub fn split(
+        &mut self,
+    ) -> (
+        &mut OutputDamageTracker,
+        &mut CaptureTexture,
+        Option<&Screencopy>,
+    ) {
         let ScreencopyQueue {
             damage_tracker,
+            texture,
             screencopies,
             ..
         } = self;
-        (damage_tracker, screencopies.first())
+        (damage_tracker, texture, screencopies.first())
     }
 
     pub fn push(&mut self, screencopy: Screencopy) {
@@ -244,9 +255,9 @@ impl ScreencopyManagerState {
     pub fn damage_tracker(
         &mut self,
         manager: &ZwlrScreencopyManagerV1,
-    ) -> Option<&mut OutputDamageTracker> {
+    ) -> Option<(&mut OutputDamageTracker, &mut CaptureTexture)> {
         let queue = self.queues.get_mut(manager)?;
-        Some(&mut queue.damage_tracker)
+        Some((&mut queue.damage_tracker, &mut queue.texture))
     }
 
     pub fn remove_output(&mut self, output: &Output) {
@@ -578,6 +589,7 @@ where
             Screencopy {
                 buffer,
                 frame: frame.clone(),
+                manager: manager.clone(),
                 info: info.clone(),
                 with_damage,
                 submitted: false,
@@ -631,6 +643,7 @@ pub enum ScreencopyBuffer {
 pub struct Screencopy {
     info: ScreencopyFrameInfo,
     frame: ZwlrScreencopyFrameV1,
+    manager: ZwlrScreencopyManagerV1,
     buffer: ScreencopyBuffer,
     with_damage: bool,
     submitted: bool,
@@ -677,8 +690,13 @@ impl Screencopy {
         }
     }
 
+    /// The manager whose queue this screencopy belongs to.
+    pub fn manager(&self) -> &ZwlrScreencopyManagerV1 {
+        &self.manager
+    }
+
     /// Submit the copied content.
-    fn submit(mut self, y_invert: bool, timestamp: Duration) {
+    pub fn submit(mut self, y_invert: bool, timestamp: Duration) {
         // Notify client that buffer is ordinary.
         self.frame.flags(if y_invert {
             Flags::YInvert

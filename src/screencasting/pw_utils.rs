@@ -57,7 +57,7 @@ use crate::dbus::mutter_screen_cast::{self, CursorMode};
 use crate::niri::{CastTarget, State};
 use crate::render_helpers::{
     clear_dmabuf, encompassing_geo, render_and_download, render_and_download_with_damage,
-    render_to_dmabuf,
+    render_to_dmabuf, CaptureTexture, PendingDownload,
 };
 use crate::screencasting::CastRenderElement;
 use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
@@ -138,13 +138,17 @@ struct CastInner {
     frames_rendered: u64,
     /// For each DMA-BUF, the `frames_rendered` value when it was last rendered to.
     dmabuf_rendered_at: HashMap<i64, u64>,
+    /// Offscreen texture for rendering SHM frames before they're copied into the buffer.
+    shm_texture: CaptureTexture,
     /// Buffers dequeued from PipeWire in process of rendering.
     ///
     /// This is an ordered list of buffers that we started rendering to and waiting for the
     /// rendering to complete. The completion can be checked from the `SyncPoint`s. The buffers are
     /// stored in order from oldest to newest, and the same ordering should be preserved when
     /// submitting completed buffers to PipeWire.
-    rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint)>,
+    ///
+    /// SHM buffers also carry their frame, which is copied in once the GPU is done.
+    rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint, Option<PendingDownload>)>,
     /// When we last warned about frames skipped for lack of a free buffer.
     last_no_buffer_warning: Option<Duration>,
     /// Frames skipped for lack of a free buffer during this cast.
@@ -512,6 +516,7 @@ impl PipeWire {
             shmbufs: HashMap::new(),
             frames_rendered: 0,
             dmabuf_rendered_at: HashMap::new(),
+            shm_texture: CaptureTexture::default(),
             rendering_buffers: Vec::new(),
             last_no_buffer_warning: None,
             skipped_frames: 0,
@@ -1231,20 +1236,36 @@ impl Cast {
         unsafe { NonNull::new(self.stream.dequeue_raw_buffer()) }
     }
 
-    fn queue_completed_buffers(&mut self) {
-        let mut inner = self.inner.borrow_mut();
+    fn queue_completed_buffers(&mut self, mut renderer: Option<&mut GlesRenderer>) {
+        let completed: Vec<_> = {
+            let mut inner = self.inner.borrow_mut();
 
-        // We want to queue buffers in order, so find the first still-rendering buffer, and queue
-        // everything up to that. Even if there are completed buffers past the first
-        // still-rendering buffer, we do not want to queue them, since that would send frames out
-        // of order.
-        let first_in_progress_idx = inner
-            .rendering_buffers
-            .iter()
-            .position(|(_, sync)| !sync.is_reached())
-            .unwrap_or(inner.rendering_buffers.len());
+            // We want to queue buffers in order, so find the first still-rendering buffer, and
+            // queue everything up to that. Even if there are completed buffers past the first
+            // still-rendering buffer, we do not want to queue them, since that would send frames
+            // out of order.
+            let first_in_progress_idx = inner
+                .rendering_buffers
+                .iter()
+                .position(|(_, sync, _)| !sync.is_reached())
+                .unwrap_or(inner.rendering_buffers.len());
 
-        for (buffer, _) in inner.rendering_buffers.drain(..first_in_progress_idx) {
+            inner
+                .rendering_buffers
+                .drain(..first_in_progress_idx)
+                .collect()
+        };
+
+        for (buffer, _, download) in completed {
+            if let Some(download) = download {
+                // The GPU is done, so mapping the download doesn't wait for it.
+                if let Err(err) = self.copy_shm_frame(renderer.as_deref_mut(), buffer, &download) {
+                    warn!("error copying frame into shm buffer: {err:?}");
+                    unsafe { return_unused_buffer(&self.stream, buffer) };
+                    continue;
+                }
+            }
+
             trace!("queueing completed buffer");
             unsafe {
                 pw_stream_queue_buffer(self.stream.as_raw_ptr(), buffer.as_ptr());
@@ -1252,7 +1273,32 @@ impl Cast {
         }
     }
 
-    unsafe fn queue_after_sync(&mut self, pw_buffer: NonNull<pw_buffer>, sync_point: SyncPoint) {
+    fn copy_shm_frame(
+        &self,
+        renderer: Option<&mut GlesRenderer>,
+        buffer: NonNull<pw_buffer>,
+        download: &PendingDownload,
+    ) -> anyhow::Result<()> {
+        let renderer = renderer.context("no renderer")?;
+        let fd = unsafe { (*(*(*buffer.as_ptr()).buffer).datas).fd };
+        let inner = self.inner.borrow();
+        let shmbuf = inner.shmbufs.get(&fd).context("unknown shm buffer")?;
+        let bytes = download.map(renderer)?;
+        ensure!(
+            bytes.len() == shmbuf.layout.size_usize(),
+            "frame doesn't fit the shm buffer"
+        );
+        shmbuf.mapping.copy_frame(bytes);
+        Ok(())
+    }
+
+    unsafe fn queue_after_sync(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        pw_buffer: NonNull<pw_buffer>,
+        sync_point: SyncPoint,
+        download: Option<PendingDownload>,
+    ) {
         let _span = tracy_client::span!("Cast::queue_after_sync");
 
         let mut inner = self.inner.borrow_mut();
@@ -1277,14 +1323,16 @@ impl Cast {
             }
         };
 
-        inner.rendering_buffers.push((pw_buffer, sync_point));
+        inner
+            .rendering_buffers
+            .push((pw_buffer, sync_point, download));
         drop(inner);
 
         match sync_fd {
             None => {
                 trace!("sync_fd is None, queueing completed buffers");
                 // In case this is the only buffer in the list, we will queue it right away.
-                self.queue_completed_buffers();
+                self.queue_completed_buffers(Some(renderer));
             }
             Some(sync_fd) => {
                 trace!("scheduling buffer to queue");
@@ -1292,10 +1340,19 @@ impl Cast {
                 let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
                 self.event_loop
                     .insert_source(source, move |_, _, state| {
-                        for cast in &mut state.niri.casting.casts {
-                            if cast.stream_id == stream_id {
-                                cast.queue_completed_buffers();
+                        let State { backend, niri, .. } = state;
+                        let mut queue = |renderer: Option<&mut GlesRenderer>| {
+                            let casts = &mut niri.casting.casts;
+                            if let Some(cast) = casts.iter_mut().find(|c| c.stream_id == stream_id)
+                            {
+                                cast.queue_completed_buffers(renderer);
                             }
+                        };
+                        if backend
+                            .with_primary_renderer(|renderer| queue(Some(renderer)))
+                            .is_none()
+                        {
+                            queue(None);
                         }
 
                         Ok(PostAction::Remove)
@@ -1408,7 +1465,7 @@ impl Cast {
                 add_cursor_metadata(renderer, (*buffer).buffer, cursor_data, redraw_cursor);
                 mark_buffer_as_metadata_only(pw_buffer, &mut self.sequence_counter);
                 trace!("queueing cursor buffer with seq={}", self.sequence_counter);
-                self.queue_after_sync(pw_buffer, SyncPoint::signaled());
+                self.queue_after_sync(renderer, pw_buffer, SyncPoint::signaled(), None);
             }
             return true;
         }
@@ -1456,7 +1513,7 @@ impl Cast {
                     if res.is_ok() {
                         inner_.dmabuf_rendered_at.insert(fd, frame);
                     }
-                    res.map(|x| (x, SharingBuf::Dma))
+                    res.map(|x| (x, SharingBuf::Dma, None))
                 }
                 x if x == DataType::MemFd.as_raw() => {
                     let shmbuf = &inner_.shmbufs[&fd];
@@ -1470,12 +1527,16 @@ impl Cast {
                     render_to_shmbuf(
                         renderer,
                         &mut damage_trackers.render,
+                        &mut inner_.shm_texture,
                         shmbuf,
                         fourcc,
                         elements,
                         states,
                     )
-                    .map(|()| (SyncPoint::signaled(), SharingBuf::Shm(shmbuf.layout)))
+                    .map(|download| {
+                        let sync = download.sync_point();
+                        (sync, SharingBuf::Shm(shmbuf.layout), Some(download))
+                    })
                 }
                 _ => Err(anyhow::anyhow!(
                     "unknown data type in dequeue_buffer_and_render"
@@ -1484,10 +1545,10 @@ impl Cast {
 
             drop(inner);
             match res {
-                Ok((sync_point, buf)) => {
+                Ok((sync_point, buf, download)) => {
                     mark_buffer_as_good(pw_buffer, &mut self.sequence_counter, buf);
                     trace!("queueing buffer with seq={}", self.sequence_counter);
-                    self.queue_after_sync(pw_buffer, sync_point);
+                    self.queue_after_sync(renderer, pw_buffer, sync_point, download);
                     true
                 }
                 Err(err) => {
@@ -1551,7 +1612,7 @@ impl Cast {
                 Ok((sync_point, buf)) => {
                     mark_buffer_as_good(pw_buffer, &mut self.sequence_counter, buf);
                     trace!("queueing clear buffer with seq={}", self.sequence_counter);
-                    self.queue_after_sync(pw_buffer, sync_point);
+                    self.queue_after_sync(renderer, pw_buffer, sync_point, None);
                     true
                 }
                 Err(err) => {
@@ -1703,7 +1764,7 @@ impl CastInner {
 
     unsafe fn on_remove_buffer(&mut self, buffer: *mut pw_buffer) {
         self.rendering_buffers
-            .retain(|(buf, _)| buf.as_ptr() != buffer);
+            .retain(|(buf, ..)| buf.as_ptr() != buffer);
 
         unsafe {
             let spa_buffer = (*buffer).buffer;
@@ -2140,11 +2201,12 @@ unsafe fn add_cursor_metadata(
 fn render_to_shmbuf(
     renderer: &mut GlesRenderer,
     damage_tracker: &mut OutputDamageTracker,
+    texture: &mut CaptureTexture,
     buffer: &Shmbuf,
     fourcc: Fourcc,
     elements: &[impl RenderElement<GlesRenderer>],
     states: RenderElementStates,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PendingDownload> {
     let _span = tracy_client::span!();
     let (size, _scale, _transform) = damage_tracker.mode().try_into().unwrap();
     let expected_size = size.w as usize * size.h as usize * SHM_BYTES_PER_PIXEL;
@@ -2153,15 +2215,7 @@ fn render_to_shmbuf(
         "invalid buffer size"
     );
 
-    let mapping =
-        render_and_download_with_damage(renderer, damage_tracker, fourcc, elements, states)?;
-
-    let bytes = renderer
-        .map_texture(&mapping)
-        .context("error mapping texture")?;
-
-    buffer.mapping.copy_frame(bytes);
-    Ok(())
+    render_and_download_with_damage(renderer, damage_tracker, texture, fourcc, elements, states)
 }
 
 fn clear_shmbuf(buffer: &Shmbuf) {
