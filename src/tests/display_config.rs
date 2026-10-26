@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::str::FromStr as _;
 
 use niri_config::{Config, FloatOrInt};
+use smithay::utils::Transform;
 
 use super::*;
+use crate::utils::PanelOrientation;
 
 #[test]
 fn display_config_keeps_entry_name_and_other_settings() {
@@ -63,4 +65,37 @@ fn display_config_keeps_a_custom_mode_sent_back() {
         panic!("{:?}", config.outputs);
     };
     assert!(entry.mode.as_ref().is_some_and(|mode| mode.custom));
+}
+
+#[test]
+fn display_config_keeps_the_panel_orientation_out_of_the_config() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+
+    // A panel mounted upside down.
+    let output = f.niri_output(1);
+    output
+        .user_data()
+        .insert_if_missing(|| PanelOrientation(Transform::_180));
+    f.niri_state().reload_output_config();
+    assert_eq!(output.current_transform(), Transform::_180);
+
+    // A client that changes only the scale sends back the transform it got, which is _180.
+    let new = niri_config::Output {
+        name: String::from("headless-1"),
+        scale: Some(FloatOrInt(1.5)),
+        transform: niri_ipc::Transform::_180,
+        position: Some(niri_config::Position { x: 0, y: 0 }),
+        mode: None,
+        ..Default::default()
+    };
+    let new_conf = HashMap::from([(String::from("headless-1"), Some(new))]);
+    f.niri_state().on_display_config_msg(new_conf);
+
+    assert_eq!(output.current_transform(), Transform::_180);
+    let config = f.niri().config.borrow();
+    let [entry] = &config.outputs.0[..] else {
+        panic!("{:?}", config.outputs);
+    };
+    assert_eq!(entry.transform, niri_ipc::Transform::Normal);
 }

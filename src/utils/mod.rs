@@ -210,16 +210,7 @@ pub fn output_size(output: &Output) -> Size<f64, Logical> {
 pub fn logical_output(output: &Output) -> niri_ipc::LogicalOutput {
     let loc = output.current_location();
     let size = output_size(output);
-    let transform = match output.current_transform() {
-        Transform::Normal => niri_ipc::Transform::Normal,
-        Transform::_90 => niri_ipc::Transform::_90,
-        Transform::_180 => niri_ipc::Transform::_180,
-        Transform::_270 => niri_ipc::Transform::_270,
-        Transform::Flipped => niri_ipc::Transform::Flipped,
-        Transform::Flipped90 => niri_ipc::Transform::Flipped90,
-        Transform::Flipped180 => niri_ipc::Transform::Flipped180,
-        Transform::Flipped270 => niri_ipc::Transform::Flipped270,
-    };
+    let transform = smithay_transform_to_ipc(output.current_transform());
     niri_ipc::LogicalOutput {
         x: loc.x,
         y: loc.y,
@@ -244,6 +235,35 @@ pub fn panel_orientation(output: &Output) -> Transform {
 pub struct WinitScale(pub Cell<f64>);
 pub fn winit_scale(output: &Output) -> Option<f64> {
     output.user_data().get::<WinitScale>().map(|x| x.0.get())
+}
+
+pub fn smithay_transform_to_ipc(transform: Transform) -> niri_ipc::Transform {
+    match transform {
+        Transform::Normal => niri_ipc::Transform::Normal,
+        Transform::_90 => niri_ipc::Transform::_90,
+        Transform::_180 => niri_ipc::Transform::_180,
+        Transform::_270 => niri_ipc::Transform::_270,
+        Transform::Flipped => niri_ipc::Transform::Flipped,
+        Transform::Flipped90 => niri_ipc::Transform::Flipped90,
+        Transform::Flipped180 => niri_ipc::Transform::Flipped180,
+        Transform::Flipped270 => niri_ipc::Transform::Flipped270,
+    }
+}
+
+/// Returns the config transform under which an output shows `requested`.
+///
+/// Outputs apply their panel orientation on top of the configured transform, while wl_output,
+/// wlr-output-management and DisplayConfig report and take applied transforms. `applied` and
+/// `configured` are the output's current ones, so their difference is the panel orientation.
+pub fn config_transform_for(
+    applied: niri_ipc::Transform,
+    configured: niri_ipc::Transform,
+    requested: niri_ipc::Transform,
+) -> niri_ipc::Transform {
+    let [applied, configured, requested] =
+        [applied, configured, requested].map(ipc_transform_to_smithay);
+    // Transform addition is commutative, so this is requested minus the panel orientation.
+    smithay_transform_to_ipc(configured + applied.invert() + requested)
 }
 
 pub fn ipc_transform_to_smithay(transform: niri_ipc::Transform) -> Transform {
@@ -650,6 +670,33 @@ pub fn cause_panic() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_transform_for_takes_out_the_panel_orientation() {
+        use niri_ipc::Transform as T;
+        let all = [
+            T::Normal,
+            T::_90,
+            T::_180,
+            T::_270,
+            T::Flipped,
+            T::Flipped90,
+            T::Flipped180,
+            T::Flipped270,
+        ];
+        for panel in all.map(ipc_transform_to_smithay) {
+            for configured in all {
+                // As reload_output_config() applies it.
+                let applied =
+                    smithay_transform_to_ipc(panel + ipc_transform_to_smithay(configured));
+                for requested in all {
+                    let new = config_transform_for(applied, configured, requested);
+                    let new_applied = panel + ipc_transform_to_smithay(new);
+                    assert_eq!(smithay_transform_to_ipc(new_applied), requested);
+                }
+            }
+        }
+    }
 
     #[test]
     fn write_png_rgba8_reports_failed_flush() {

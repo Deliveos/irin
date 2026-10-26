@@ -24,7 +24,7 @@ use zwlr_output_mode_v1::ZwlrOutputModeV1;
 use crate::backend::OutputId;
 use crate::niri::State;
 use crate::protocols::EmptyData;
-use crate::utils::ipc_transform_to_smithay;
+use crate::utils::{config_transform_for, ipc_transform_to_smithay};
 
 const VERSION: u32 = 4;
 
@@ -694,7 +694,22 @@ where
                         return;
                     }
                 };
-                new_config.transform = transform;
+                // Heads report applied transforms, which include the panel orientation.
+                let current = g_state.current_state.get(output_id);
+                let applied = current
+                    .and_then(|c| c.logical.as_ref())
+                    .map(|l| l.transform);
+                new_config.transform = match (current, applied) {
+                    (Some(current), Some(applied)) => {
+                        let name = OutputName::from_ipc_output(current);
+                        let configured = g_state
+                            .current_config
+                            .find(&name)
+                            .map_or(Transform::Normal, |c| c.transform);
+                        config_transform_for(applied, configured, transform)
+                    }
+                    _ => transform,
+                };
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
                 if scale <= 0. {

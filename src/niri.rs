@@ -2418,6 +2418,12 @@ impl State {
         new_conf: HashMap<String, Option<niri_config::Output>>,
     ) {
         for (name, conf) in new_conf {
+            let applied = self
+                .niri
+                .global_space
+                .outputs()
+                .find(|output| output.name() == name)
+                .map(|output| crate::utils::smithay_transform_to_ipc(output.current_transform()));
             self.modify_output_config(&name, move |output| {
                 let Some(new) = conf else {
                     output.off = true;
@@ -2427,7 +2433,13 @@ impl State {
                 // serial, and has settings that DisplayConfig doesn't know.
                 output.off = false;
                 output.scale = new.scale;
-                output.transform = new.transform;
+                // DisplayConfig deals in applied transforms, which include the panel orientation.
+                output.transform = match applied {
+                    Some(applied) => {
+                        crate::utils::config_transform_for(applied, output.transform, new.transform)
+                    }
+                    None => new.transform,
+                };
                 output.position = new.position;
                 // No mode means the client sent back the current one. Keep the entry's, which can
                 // be a custom mode or a modeline that DisplayConfig can't express.
