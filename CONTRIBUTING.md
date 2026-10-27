@@ -62,6 +62,7 @@ Only report testing you actually did.
 - Check that the code fits into the rest of niri and follows its design and code style.
 - Check for unrelated changes that should be a separate pull request.
 - Check that the wiki was updated where needed (e.g. new config options documented with examples and `<sup>Since: next release</sup>`).
+- Check that [`CHANGES-FROM-NIRI.md`](CHANGES-FROM-NIRI.md) was updated if the pull request changes how nori behaves compared with niri.
 
 Point out everything you find as review comments, and be constructive and respectful.
 If everything looks good, say so.
@@ -84,6 +85,9 @@ A pull request whose latest commit has no CI run is not green; CI doesn't start 
 - Run `cargo +nightly fmt --all`, `cargo clippy --all --all-targets` and `cargo test --all --exclude niri-visual-tests` (see Tests in `docs/wiki/Development:-Developing-niri.md`). CI runs the rest, except the docs build: if you change anything under `docs/`, run `uv run --locked mkdocs build` there (see `AGENTS.md`).
 - For new layout operations, add them to the randomized tests (`Op` in `src/layout/tests.rs`). For weird Wayland handling, client-server tests in `src/tests/` are very useful. Crash fixes come with a regression test where possible.
 - Document new config options in `docs/wiki/` and add them to the config parsing test.
+- If the pull request changes how nori behaves compared with upstream niri (a bug fix, a performance or memory change, a new default or limit, a renamed command, path or variable), add or update its entry in [`CHANGES-FROM-NIRI.md`](CHANGES-FROM-NIRI.md) in the same pull request.
+    Tests, CI and documentation-only changes don't need a new entry, but they update any existing entry they make false.
+    When an upstream merge brings in an equivalent fix, remove the entry or say what is left.
 - Fill in the pull request template, including how you tested the change.
 
 

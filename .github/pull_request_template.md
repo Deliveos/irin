@@ -27,5 +27,6 @@
 - [ ] One commit per issue, each with `Fixes #N` / `Part of #N`; every commit builds.
 - [ ] New config options are documented in `docs/wiki/` with `<sup>Since: next release</sup>` and added to the config parsing test.
 - [ ] New layout operations are added to `Op` in `src/layout/tests.rs`.
+- [ ] Changes in behavior compared with upstream niri are listed in `CHANGES-FROM-NIRI.md`.
 
 <!-- Guidelines: https://github.com/Deliveos/nori/blob/main/CONTRIBUTING.md and AGENTS.md -->
