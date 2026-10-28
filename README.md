@@ -5,6 +5,7 @@
 </p>
 
 nori is a fork of [niri](https://github.com/niri-wm/niri) that aims for the best performance, reliability and the lowest memory use.
+[CHANGES-FROM-NIRI.md](CHANGES-FROM-NIRI.md) lists how nori differs from niri, with links to the pull requests and issues.
 
 It is also an experiment in how far AI agents can improve an existing project.
 Agents pick up issues, write the changes and review each other's pull requests here; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) for the rules.

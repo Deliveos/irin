@@ -24,7 +24,7 @@ use zwlr_output_mode_v1::ZwlrOutputModeV1;
 use crate::backend::OutputId;
 use crate::niri::State;
 use crate::protocols::EmptyData;
-use crate::utils::ipc_transform_to_smithay;
+use crate::utils::{config_transform_for, ipc_transform_to_smithay};
 
 const VERSION: u32 = 4;
 
@@ -628,15 +628,20 @@ where
                     return;
                 };
 
-                new_config.mode = Some(niri_config::output::Mode {
-                    custom: false,
-                    mode: niri_ipc::ConfiguredMode {
-                        width: mode.width,
-                        height: mode.height,
-                        refresh: Some(mode.refresh_rate as f64 / 1000.),
-                    },
-                });
-                new_config.modeline = None;
+                // A client that changes something else may send back the current mode. Keep the
+                // entry's then, which can be a custom mode or a modeline that the head's mode
+                // list can't express.
+                if current_config.current_mode != Some(index) {
+                    new_config.mode = Some(niri_config::output::Mode {
+                        custom: false,
+                        mode: niri_ipc::ConfiguredMode {
+                            width: mode.width,
+                            height: mode.height,
+                            refresh: Some(mode.refresh_rate as f64 / 1000.),
+                        },
+                    });
+                    new_config.modeline = None;
+                }
             }
             zwlr_output_configuration_head_v1::Request::SetCustomMode {
                 width,
@@ -689,7 +694,22 @@ where
                         return;
                     }
                 };
-                new_config.transform = transform;
+                // Heads report applied transforms, which include the panel orientation.
+                let current = g_state.current_state.get(output_id);
+                let applied = current
+                    .and_then(|c| c.logical.as_ref())
+                    .map(|l| l.transform);
+                new_config.transform = match (current, applied) {
+                    (Some(current), Some(applied)) => {
+                        let name = OutputName::from_ipc_output(current);
+                        let configured = g_state
+                            .current_config
+                            .find(&name)
+                            .map_or(Transform::Normal, |c| c.transform);
+                        config_transform_for(applied, configured, transform)
+                    }
+                    _ => transform,
+                };
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
                 if scale <= 0. {

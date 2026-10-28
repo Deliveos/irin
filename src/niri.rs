@@ -18,7 +18,7 @@ use niri_config::debug::PreviewRender;
 use niri_config::output::MaxBpc;
 use niri_config::window_rule::VrrRule;
 use niri_config::{
-    Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
+    Bind, Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
     WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
@@ -35,7 +35,6 @@ use smithay::backend::renderer::element::{
     RenderElementStates,
 };
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::Color32F;
 use smithay::desktop::utils::{
     bbox_from_surface_tree, output_update, send_dmabuf_feedback_surface_tree,
@@ -174,8 +173,9 @@ use crate::render_helpers::surface::push_elements_from_surface_tree;
 use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{
-    encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm,
-    render_to_texture, render_to_vec, shaders, RenderCtx, RenderTarget,
+    encompassing_geo, render_for_shm, render_to_dmabuf, render_to_encompassing_texture,
+    render_to_texture, render_to_vec, shaders, CaptureTexture, PendingCapture, RenderCtx,
+    RenderTarget,
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
@@ -193,7 +193,8 @@ use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
     center, center_f64, create_new_numbered, expand_home, get_monotonic_time,
     ipc_transform_to_smithay, is_mapped, logical_output, make_screenshot_path, output_matches_name,
-    output_size, panel_orientation, send_scale_transform, winit_scale, write_png_rgba8, xwayland,
+    output_size, panel_orientation, run_when_readable, send_scale_transform, winit_scale,
+    write_png_rgba8, xwayland, CastStreamId,
 };
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
@@ -361,6 +362,12 @@ pub struct Niri {
     pub suppressed_keys: HashSet<Keycode>,
     /// Button codes of the mouse buttons to suppress.
     pub suppressed_buttons: HashSet<u32>,
+    /// Binds whose release action is pending, keyed by the key code.
+    pub pending_release_binds: HashMap<Keycode, Bind>,
+    /// Same as `pending_release_binds`, but for mouse buttons, keyed by the button code.
+    pub pending_mouse_release_binds: HashMap<u32, Bind>,
+    /// Same as `pending_release_binds`, but for tablet tool buttons, keyed by the button code.
+    pub pending_tablet_release_binds: HashMap<u32, Bind>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
@@ -2417,6 +2424,12 @@ impl State {
         new_conf: HashMap<String, Option<niri_config::Output>>,
     ) {
         for (name, conf) in new_conf {
+            let applied = self
+                .niri
+                .global_space
+                .outputs()
+                .find(|output| output.name() == name)
+                .map(|output| crate::utils::smithay_transform_to_ipc(output.current_transform()));
             self.modify_output_config(&name, move |output| {
                 let Some(new) = conf else {
                     output.off = true;
@@ -2426,11 +2439,21 @@ impl State {
                 // serial, and has settings that DisplayConfig doesn't know.
                 output.off = false;
                 output.scale = new.scale;
-                output.transform = new.transform;
+                // DisplayConfig deals in applied transforms, which include the panel orientation.
+                output.transform = match applied {
+                    Some(applied) => {
+                        crate::utils::config_transform_for(applied, output.transform, new.transform)
+                    }
+                    None => new.transform,
+                };
                 output.position = new.position;
-                output.mode = new.mode;
-                // A modeline takes precedence over the mode.
-                output.modeline = None;
+                // No mode means the client sent back the current one. Keep the entry's, which can
+                // be a custom mode or a modeline that DisplayConfig can't express.
+                if new.mode.is_some() {
+                    output.mode = new.mode;
+                    // A modeline takes precedence over the mode.
+                    output.modeline = None;
+                }
             });
         }
         self.reload_output_config();
@@ -2905,6 +2928,9 @@ impl Niri {
             popup_grab: None,
             suppressed_keys: HashSet::new(),
             suppressed_buttons: HashSet::new(),
+            pending_release_binds: HashMap::new(),
+            pending_mouse_release_binds: HashMap::new(),
+            pending_tablet_release_binds: HashMap::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
             presentation_state,
@@ -5796,7 +5822,7 @@ impl Niri {
         let mut screencopy_state = mem::take(&mut self.screencopy_state);
 
         screencopy_state.with_queues_mut(|queue| {
-            let (damage_tracker, screencopy) = queue.split();
+            let (damage_tracker, texture, screencopy) = queue.split();
             if let Some(screencopy) = screencopy {
                 if screencopy.output() == output {
                     let ctx = RenderCtx {
@@ -5835,21 +5861,22 @@ impl Niri {
                         let render_result = Self::render_for_screencopy_internal(
                             renderer,
                             damage_tracker,
+                            texture,
                             &elements,
                             states,
                             screencopy,
                         );
-                        match render_result {
-                            Ok(sync) => {
-                                queue.pop().submit_after_sync(false, sync, &self.event_loop);
-                            }
-                            Err(err) => {
-                                // Recreate damage tracker to report full damage next check.
-                                *damage_tracker =
-                                    OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
-                                queue.pop();
-                                warn!("error rendering for screencopy: {err:?}");
-                            }
+                        // Dropping the screencopy on error fails it.
+                        let popped = queue.pop();
+                        let res = render_result.and_then(|pending| {
+                            Self::submit_screencopy(&self.event_loop, renderer, popped, pending)
+                        });
+                        if let Err(err) = res {
+                            // Recreate damage tracker to report full damage next check.
+                            let (damage_tracker, _, _) = queue.split();
+                            *damage_tracker =
+                                OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+                            warn!("error rendering for screencopy: {err:?}");
                         }
                     } else {
                         trace!("no damage found, waiting till next redraw");
@@ -5889,7 +5916,7 @@ impl Niri {
             elements.push(elem);
         });
 
-        let Some(damage_tracker) = self.screencopy_state.damage_tracker(manager) else {
+        let Some((damage_tracker, texture)) = self.screencopy_state.damage_tracker(manager) else {
             error!("screencopy queue must not be deleted as long as frames exist");
             bail!("screencopy queue missing");
         };
@@ -5899,11 +5926,14 @@ impl Niri {
         let res = Self::render_for_screencopy_internal(
             renderer,
             damage_tracker,
+            texture,
             &elements,
             states,
             &screencopy,
         );
-        let res = res.map(|sync| screencopy.submit_after_sync(false, sync, &self.event_loop));
+        let res = res.and_then(|pending| {
+            Self::submit_screencopy(&self.event_loop, renderer, screencopy, pending)
+        });
 
         if res.is_err() {
             // Recreate damage tracker to report full damage next check.
@@ -6010,36 +6040,40 @@ impl Niri {
             let res = match capture_buffer {
                 CaptureBuffer::Dma(dmabuf) => {
                     render_to_dmabuf(renderer, &mut s.damage_tracker, dmabuf, 0, elements, states)
-                        .map(Some)
+                        .map(PendingCapture::Dma)
                 }
-                CaptureBuffer::Shm => render_to_shm(
+                CaptureBuffer::Shm => render_for_shm(
                     renderer,
                     &mut s.damage_tracker,
+                    &mut s.texture,
                     &buffer,
                     wl_shm::Format::Xrgb8888,
                     elements,
                     states,
                 )
-                .map(|()| None),
+                .map(PendingCapture::Shm),
             };
 
-            match res {
-                Ok(sync) => {
-                    image_copy_capture_impl::frame_success_after_sync(
-                        frame,
-                        transform,
-                        damage,
-                        target_presentation_time,
-                        sync,
-                        &self.event_loop,
-                    );
-                }
+            let res = match res {
+                Ok(pending) => image_copy_capture_impl::finish_frame(
+                    frame,
+                    transform,
+                    damage,
+                    target_presentation_time,
+                    pending,
+                    renderer,
+                    &self.event_loop,
+                    s.stream_id,
+                ),
                 Err(err) => {
-                    warn!("error rendering for image copy capture: {err:?}");
                     frame.fail(CaptureFailureReason::Unknown);
-                    // Report full damage next time.
-                    s.damage_tracker = OutputDamageTracker::new(size, scale, transform);
+                    Err(err)
                 }
+            };
+            if let Err(err) = res {
+                warn!("error rendering for image copy capture: {err:?}");
+                // Report full damage next time.
+                s.damage_tracker = OutputDamageTracker::new(size, scale, transform);
             }
         }
 
@@ -6123,25 +6157,35 @@ impl Niri {
                 continue;
             }
 
-            let res = render_to_shm(
+            let res = render_for_shm(
                 renderer,
                 &mut s.damage_tracker,
+                &mut s.texture,
                 &buffer,
                 wl_shm::Format::Argb8888,
                 elements,
                 states,
             );
-            match res {
-                Ok(()) => {
-                    let full_damage = vec![Rectangle::from_size(constraints.size)];
-                    frame.success(Transform::Normal, full_damage, target_presentation_time);
-                }
+            let res = match res {
+                Ok(copy) => image_copy_capture_impl::finish_frame(
+                    frame,
+                    Transform::Normal,
+                    vec![Rectangle::from_size(constraints.size)],
+                    target_presentation_time,
+                    PendingCapture::Shm(copy),
+                    renderer,
+                    &self.event_loop,
+                    s.stream_id,
+                ),
                 Err(err) => {
-                    warn!("error rendering for cursor capture: {err:?}");
                     frame.fail(CaptureFailureReason::Unknown);
-                    // Report full damage next time.
-                    s.damage_tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
+                    Err(err)
                 }
+            };
+            if let Err(err) = res {
+                warn!("error rendering for cursor capture: {err:?}");
+                // Report full damage next time.
+                s.damage_tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
             }
         }
 
@@ -6334,38 +6378,96 @@ impl Niri {
     fn render_for_screencopy_internal(
         renderer: &mut GlesRenderer,
         damage_tracker: &mut OutputDamageTracker,
+        texture: &mut CaptureTexture,
         elements: &[impl RenderElement<GlesRenderer>],
         states: RenderElementStates,
         screencopy: &Screencopy,
-    ) -> anyhow::Result<Option<SyncPoint>> {
-        let sync = match screencopy.buffer() {
-            ScreencopyBuffer::Dmabuf(dmabuf) => {
-                let sync = render_to_dmabuf(
-                    renderer,
-                    damage_tracker,
-                    dmabuf.clone(),
-                    0,
-                    elements,
-                    states,
-                )
-                .context("error rendering to screencopy dmabuf")?;
-                Some(sync)
-            }
-            ScreencopyBuffer::Shm(wl_buffer) => {
-                render_to_shm(
-                    renderer,
-                    damage_tracker,
-                    wl_buffer,
-                    wl_shm::Format::Xrgb8888,
-                    elements,
-                    states,
-                )
-                .context("error rendering to screencopy shm buffer")?;
-                None
-            }
-        };
+    ) -> anyhow::Result<PendingCapture> {
+        match screencopy.buffer() {
+            ScreencopyBuffer::Dmabuf(dmabuf) => render_to_dmabuf(
+                renderer,
+                damage_tracker,
+                dmabuf.clone(),
+                0,
+                elements,
+                states,
+            )
+            .context("error rendering to screencopy dmabuf")
+            .map(PendingCapture::Dma),
+            ScreencopyBuffer::Shm(wl_buffer) => render_for_shm(
+                renderer,
+                damage_tracker,
+                texture,
+                wl_buffer,
+                wl_shm::Format::Xrgb8888,
+                elements,
+                states,
+            )
+            .context("error rendering to screencopy shm buffer")
+            .map(PendingCapture::Shm),
+        }
+    }
 
-        Ok(sync)
+    /// Submits the screencopy once its frame is in the client's buffer, without blocking on the
+    /// GPU.
+    ///
+    /// Returns an error, with the screencopy failed, if finishing it right away failed. If it fails
+    /// later, its queue reports full damage next time.
+    fn submit_screencopy(
+        event_loop: &LoopHandle<'static, State>,
+        renderer: &mut GlesRenderer,
+        screencopy: Screencopy,
+        pending: PendingCapture,
+    ) -> anyhow::Result<()> {
+        match pending {
+            PendingCapture::Dma(sync) => {
+                screencopy.submit_after_sync(false, Some(sync), event_loop);
+            }
+            PendingCapture::Shm(copy) => {
+                let timestamp = get_monotonic_time();
+                match copy.sync_fd() {
+                    // Dropping the screencopy on error fails it.
+                    None => {
+                        copy.finish(renderer)?;
+                        screencopy.submit(false, timestamp);
+                    }
+                    Some(sync_fd) => run_when_readable(event_loop, sync_fd, move |state| {
+                        let res = state
+                            .backend
+                            .with_primary_renderer(|renderer| copy.finish(renderer))
+                            .unwrap_or_else(|| Err(anyhow::anyhow!("no renderer")));
+                        if let Err(err) = res {
+                            warn!("error copying screencopy frame: {err:?}");
+                            // Report full damage next time. Dropping the screencopy fails it.
+                            let screencopy_state = &mut state.niri.screencopy_state;
+                            let manager = screencopy.manager();
+                            if let Some((tracker, _)) = screencopy_state.damage_tracker(manager) {
+                                *tracker = OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+                            }
+                            return;
+                        }
+                        screencopy.submit(false, timestamp);
+                    }),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Makes the image copy capture session with this stream report full damage next frame.
+    pub fn reset_image_copy_damage(&mut self, stream_id: CastStreamId) {
+        let empty = || OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
+        for s in &mut self.image_copy_sessions {
+            if s.stream_id == stream_id {
+                s.damage_tracker = empty();
+            }
+        }
+        for s in &mut self.image_copy_cursor_sessions {
+            if s.stream_id == stream_id {
+                s.damage_tracker = empty();
+            }
+        }
     }
 
     #[cfg(not(feature = "xdp-gnome-screencast"))]
@@ -6837,6 +6939,19 @@ impl Niri {
         });
 
         Ok(())
+    }
+
+    pub fn clear_input_state(&mut self) {
+        self.suppressed_keys.clear();
+        self.suppressed_buttons.clear();
+        self.pending_release_binds.clear();
+        self.pending_mouse_release_binds.clear();
+        self.pending_tablet_release_binds.clear();
+
+        // Stop ongoing key repeat if any.
+        if let Some(token) = self.bind_repeat_timer.take() {
+            self.event_loop.remove(token);
+        }
     }
 
     pub fn is_locked(&self) -> bool {

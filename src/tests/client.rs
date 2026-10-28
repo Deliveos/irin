@@ -18,6 +18,8 @@ use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::clien
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_popup::{self, XdgPopup};
@@ -33,6 +35,9 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
 };
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
+use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
+use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::ZwpInputMethodV2;
+use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2;
 use smithay::reexports::rustix::fs::{memfd_create, MemfdFlags};
 use wayland_backend::client::Backend;
 use wayland_client::globals::Global;
@@ -75,8 +80,11 @@ pub struct State {
     pub xdg_wm_base: Option<XdgWmBase>,
     pub layer_shell: Option<ZwlrLayerShellV1>,
     pub virtual_pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
+    pub virtual_pointer: Option<ZwlrVirtualPointerV1>,
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
     pub shm: Option<WlShm>,
+    pub text_input_manager: Option<ZwpTextInputManagerV3>,
+    pub input_method_manager: Option<ZwpInputMethodManagerV2>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub foreign_toplevel_list: Option<ExtForeignToplevelListV1>,
@@ -148,7 +156,7 @@ pub struct Keyboard {
 #[derive(Debug)]
 pub enum KeyboardEvent {
     Enter {
-        keys: Vec<u8>,
+        keys: Vec<u32>,
     },
     Leave,
     Key {
@@ -293,8 +301,11 @@ impl Client {
             xdg_wm_base: None,
             layer_shell: None,
             virtual_pointer_manager: None,
+            virtual_pointer: None,
             spbm: None,
             shm: None,
+            text_input_manager: None,
+            input_method_manager: None,
             viewporter: None,
             ksim: None,
             foreign_toplevel_list: None,
@@ -526,6 +537,17 @@ impl State {
         let seat = self.seats.keys().next().unwrap();
         ksim.inhibit_shortcuts(surface, seat, &self.qh, ())
     }
+
+    pub fn virtual_pointer(&mut self) -> ZwlrVirtualPointerV1 {
+        if let Some(pointer) = &self.virtual_pointer {
+            return pointer.clone();
+        }
+
+        let manager = self.virtual_pointer_manager.as_ref().unwrap();
+        let pointer = manager.create_virtual_pointer(None, &self.qh, ());
+        self.virtual_pointer = Some(pointer.clone());
+        pointer
+    }
 }
 
 impl Window {
@@ -743,6 +765,12 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == WlShm::interface().name {
                     let version = min(version, WlShm::interface().version);
                     state.shm = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpTextInputManagerV3::interface().name {
+                    let version = min(version, ZwpTextInputManagerV3::interface().version);
+                    state.text_input_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpInputMethodManagerV2::interface().name {
+                    let version = min(version, ZwpInputMethodManagerV2::interface().version);
+                    state.input_method_manager = Some(registry.bind(name, version, qh, ()));
                 } else if interface == WlSubcompositor::interface().name {
                     let version = min(version, WlSubcompositor::interface().version);
                     state.subcompositor = Some(registry.bind(name, version, qh, ()));
@@ -848,6 +876,10 @@ impl Dispatch<WlKeyboard, WlSeat> for State {
             wl_keyboard::Event::Keymap { .. } => (),
             wl_keyboard::Event::Enter { surface, keys, .. } => {
                 keyboard.surface = Some(surface.clone());
+
+                // The order is arbitrary, but we need a fixed order for our tests.
+                let mut keys: Vec<u32> = bytemuck::pod_collect_to_vec(&keys);
+                keys.sort_unstable();
 
                 let event = KeyboardEvent::Enter { keys };
                 let surface = state.surfaces.get_mut(&surface).unwrap();
@@ -1118,6 +1150,31 @@ impl Dispatch<WlShmPool, ()> for State {
         unreachable!()
     }
 }
+
+macro_rules! ignore_events {
+    ($($proxy:ty),*) => {$(
+        impl Dispatch<$proxy, ()> for State {
+            fn event(
+                _state: &mut Self,
+                _proxy: &$proxy,
+                _event: <$proxy as wayland_client::Proxy>::Event,
+                _data: &(),
+                _conn: &Connection,
+                _qhandle: &QueueHandle<Self>,
+            ) {
+            }
+        }
+    )*};
+}
+
+// The input method tests only look at which outputs the popup surface entered.
+ignore_events!(
+    ZwpTextInputManagerV3,
+    ZwpTextInputV3,
+    ZwpInputMethodManagerV2,
+    ZwpInputMethodV2,
+    ZwpInputPopupSurfaceV2
+);
 
 impl Dispatch<WpSinglePixelBufferManagerV1, ()> for State {
     fn event(

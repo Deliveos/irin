@@ -16,6 +16,7 @@ use std::time::Duration;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::drm::DrmNode;
 use smithay::backend::input::{InputEvent, TabletToolDescriptor};
+use smithay::desktop::utils::output_update;
 use smithay::desktop::{PopupKind, PopupManager};
 use smithay::input::dnd::{self, DnDGrab, DndGrabHandler, DndTarget};
 use smithay::input::pointer::{self, CursorIcon, CursorImageStatus, Focus, PointerHandle};
@@ -253,6 +254,12 @@ impl InputMethodHandler for State {
     }
 
     fn dismiss_popup(&mut self, surface: PopupSurface) {
+        // smithay can show the popup again for another window, which may be on another output.
+        // This window won't visit the popup anymore, so leave its outputs here.
+        for output in self.niri.global_space.outputs() {
+            output_update(output, None, surface.wl_surface());
+        }
+
         if let Some(parent) = surface.get_parent().map(|parent| parent.surface.clone()) {
             let _ = PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));
         }
