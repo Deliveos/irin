@@ -10,6 +10,7 @@ Read this file first.
 | Read | Why |
 |---|---|
 | `CONTRIBUTING.md` | Quality bar, testing, reviewing, writing pull requests |
+| `CHANGES-FROM-NIRI.md` | What nori already does differently from upstream niri; keep it up to date |
 | `docs/wiki/Development:-Developing-niri.md` | Running a local build, logging levels, tests, profiling |
 | `docs/wiki/Development:-Design-Principles.md` | How niri is meant to behave; changes must fit these |
 | `docs/wiki/Development:-Redraw-Loop.md` | How and when frames are rendered |
@@ -95,6 +96,9 @@ If you change anything under `docs/`, run `uv run --locked mkdocs build` in `doc
 - For crash and freeze fixes, add a regression test where possible (see `src/tests/crash_regressions.rs`).
 - New layout operations go into `Op` in `src/layout/tests.rs` (and the `every_op` arrays where applicable), so the randomized tests cover them.
 - New config options go into the config parsing test and are documented in `docs/wiki/` with `<sup>Since: next release</sup>`.
+- If the pull request changes how nori behaves compared with upstream niri (a fix, a performance or memory change, a new default or limit, a renamed command or path), add or update its entry in `CHANGES-FROM-NIRI.md`, citing the pull request and issues.
+    Tests, CI and documentation-only changes don't need a new entry, but they update any existing entry they make false.
+    An upstream merge that brings in an equivalent fix removes the entry or says what is left.
 - Fill in the pull request template.
     Report testing honestly: if you didn't test by hand, write "Not tested by hand."
     Never claim testing you didn't do.
