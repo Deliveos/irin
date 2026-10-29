@@ -459,6 +459,32 @@ fn interactive_move_unfullscreen_to_floating_restores_size() {
 }
 
 #[test]
+fn interactive_move_follows_output_scale_change() {
+    let (mut f, id, surface) = set_up();
+
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    let window = niri.layout.windows().next().unwrap().1.window.clone();
+    niri.layout
+        .interactive_move_begin(window.clone(), &output, Point::default());
+    niri.layout.interactive_move_update(
+        &window,
+        Point::from((1000., 0.)),
+        output.clone(),
+        Point::default(),
+    );
+    f.double_roundtrip(id);
+
+    // The scale changes in the middle of the move.
+    output.change_current_state(None, None, Some(smithay::output::Scale::Integer(2)), None);
+    f.niri().output_resized(&output);
+    f.double_roundtrip(id);
+
+    let scale = f.client(id).state.surfaces[&surface].preferred_buffer_scale;
+    assert_eq!(scale, Some(2));
+}
+
+#[test]
 fn interactive_move_unmaximize_to_floating_restores_size() {
     let (mut f, id, surface) = set_up();
 

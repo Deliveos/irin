@@ -187,6 +187,8 @@ pub struct Surface {
     pub keyboard_events_looked_at: usize,
     /// Outputs from `wl_surface.enter` without a matching `wl_surface.leave`.
     pub entered_outputs: Vec<WlOutput>,
+    /// The last `wl_surface.preferred_buffer_scale`.
+    pub preferred_buffer_scale: Option<i32>,
 }
 
 /// User data of a popup's `xdg_surface`, whose configures are acked right away.
@@ -480,6 +482,7 @@ impl State {
                 keyboard_events_received: Vec::new(),
                 keyboard_events_looked_at: 0,
                 entered_outputs: Vec::new(),
+                preferred_buffer_scale: None,
             },
         );
         surface
@@ -1168,7 +1171,11 @@ impl Dispatch<WlSurface, ()> for State {
                     surface.entered_outputs.retain(|o| *o != output);
                 }
             }
-            wl_surface::Event::PreferredBufferScale { .. } => (),
+            wl_surface::Event::PreferredBufferScale { factor } => {
+                if let Some(surface) = state.surfaces.get_mut(surface) {
+                    surface.preferred_buffer_scale = Some(factor);
+                }
+            }
             wl_surface::Event::PreferredBufferTransform { .. } => (),
             _ => unreachable!(),
         }

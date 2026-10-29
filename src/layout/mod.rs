@@ -1504,6 +1504,23 @@ impl<W: LayoutElement> Layout<W> {
     pub fn update_output_size(&mut self, output: &Output) {
         let _span = tracy_client::span!("Layout::update_output_size");
 
+        // The dragged tile isn't on a workspace, so update it as update_options() does.
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            if move_.output == *output {
+                let view_size = output_size(output);
+                let scale = output.current_scale().fractional_scale();
+                let options = Options::clone(&self.options)
+                    .with_merged_layout(move_.output_config.as_ref())
+                    .with_merged_layout(move_.workspace_config.as_ref().map(|(_, c)| c))
+                    .adjusted_for_scale(scale);
+                move_.tile.update_config(view_size, scale, Rc::new(options));
+                move_.tile.window().set_preferred_scale_transform(
+                    output.current_scale(),
+                    output.current_transform(),
+                );
+            }
+        }
+
         let Some(mon) = self.monitor_for_output_mut(output) else {
             error!("monitor missing in update_output_size()");
             return;

@@ -1110,14 +1110,17 @@ impl<W: LayoutElement> Monitor<W> {
                 InsertWorkspace::Existing(ws_id) => {
                     if let Some(idx) = self.idx_of_ws(ws_id) {
                         let ws = &self.workspaces[idx];
-                        if let Some(mut area) = ws.insert_hint_area(hint.position) {
+                        // The hint's workspace can be off screen, for example when the output got
+                        // smaller and the pointer hasn't moved since. Then there's nothing to draw.
+                        if let (Some(mut area), Some(geo)) =
+                            (ws.insert_hint_area(hint.position), insert_hint_ws_geo)
+                        {
                             let scale = ws.scale().fractional_scale();
                             let view_size = ws.view_size();
 
                             // Make sure the hint is at least partially visible.
                             if matches!(hint.position, InsertPosition::NewColumn(_)) {
                                 let zoom = self.overview_zoom();
-                                let geo = insert_hint_ws_geo.unwrap();
                                 let geo = geo.downscale(zoom);
 
                                 area.loc.x = area.loc.x.max(-geo.loc.x - area.size.w / 2.);
