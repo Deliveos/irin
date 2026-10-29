@@ -703,13 +703,12 @@ impl VirtualPointerHandler for State {
 
 impl DrmLeaseHandler for State {
     fn drm_lease_state(&mut self, node: DrmNode) -> &mut DrmLeaseState {
+        // smithay only calls this for nodes that had a lease state, and Tty keeps the states of
+        // removed devices, so this always finds one.
         self.backend
             .tty()
-            .get_device_from_node(node)
-            .unwrap()
-            .drm_lease_state
-            .as_mut()
-            .unwrap()
+            .drm_lease_state(node)
+            .expect("DRM lease state must exist for a node with lease objects")
     }
 
     fn lease_request(
@@ -721,29 +720,28 @@ impl DrmLeaseHandler for State {
             "Received lease request for {} connectors",
             request.connectors.len()
         );
-        self.backend
-            .tty()
-            .get_device_from_node(node)
-            .unwrap()
-            .lease_request(request)
+        let Some(device) = self.backend.tty().get_device_from_node(node) else {
+            debug!("rejecting lease request for removed device {node}");
+            return Err(LeaseRejected::default());
+        };
+        device.lease_request(request)
     }
 
     fn new_active_lease(&mut self, node: DrmNode, lease: DrmLease) {
         debug!("Lease success");
-        self.backend
-            .tty()
-            .get_device_from_node(node)
-            .unwrap()
-            .new_lease(lease);
+        let Some(device) = self.backend.tty().get_device_from_node(node) else {
+            // Dropping the lease revokes it.
+            warn!("dropping new lease for removed device {node}");
+            return;
+        };
+        device.new_lease(lease);
     }
 
     fn lease_destroyed(&mut self, node: DrmNode, lease_id: u32) {
         debug!("Destroyed lease");
-        self.backend
-            .tty()
-            .get_device_from_node(node)
-            .unwrap()
-            .remove_lease(lease_id);
+        if let Some(device) = self.backend.tty().get_device_from_node(node) {
+            device.remove_lease(lease_id);
+        }
     }
 }
 

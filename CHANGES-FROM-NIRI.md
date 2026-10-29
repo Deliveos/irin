@@ -122,6 +122,13 @@ A crash of the compositor ends the whole session.
 - **Huge `xdg_positioner` values.**
     The smithay version that niri uses does plain `i32` arithmetic on the positioner values a client sends, and release builds have overflow checks on, so one popup request such as `set_offset(i32::MAX, 0)` takes the session down.
     nori builds against a smithay fork in which this math saturates (see [Building and packaging](#building-and-packaging)) and has a regression test for it ([#101](https://github.com/Deliveos/nori/pull/101); fixes [#90](https://github.com/Deliveos/nori/issues/90)).
+- **DRM lease objects after their GPU is removed.**
+    When a DRM device is removed (an eGPU or a USB display adapter unplugged), niri drops its DRM lease state and only disables its lease global.
+    Destroying that device's lease objects later, submitting a lease request made before the removal, or binding the disabled global (any client can still bind it by its name, since wayland-backend doesn't check whether a global is disabled when a client binds it) makes smithay look the state up by the device's node, which panics in niri.
+    Any GPU with DRM leasing is affected; destroying connector or lease objects needs a non-desktop connector, such as a VR headset's.
+    nori keeps the lease state of a removed device (with its connectors withdrawn) until a new device with the same node gets one, and rejects lease requests for a removed device.
+    After that, the old device's lease objects find the new device's state, so destroying an old lease object can end a new lease with the same lessee id.
+    There is no test, because the tests run on the headless backend and this is TTY code ([#208](https://github.com/Deliveos/nori/pull/208); fixes [#148](https://github.com/Deliveos/nori/issues/148)).
 - **Negative `xdg_positioner` parent size.**
     In the same smithay version, a negative `set_parent_size` builds a size that fails a debug assertion, so any client can panic builds with debug assertions (the dev profile and `cargo test`); release builds were not affected.
     The smithay fork clamps negative parent sizes to 0 ([#122](https://github.com/Deliveos/nori/pull/122); fixes [#104](https://github.com/Deliveos/nori/issues/104)).
