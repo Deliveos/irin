@@ -4175,6 +4175,55 @@ prop_compose! {
     }
 }
 
+#[test]
+fn move_workspace_to_top_keeps_focus_with_empty_workspace_above_first() {
+    let options = Options {
+        layout: niri_config::Layout {
+            empty_workspace_above_first: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FocusWorkspaceDown,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ];
+
+    // Workspaces: empty, window 1, window 2 (focused), empty. Move the focused one to the top.
+    let mut layout = check_ops_with_options(options.clone(), ops.clone());
+    assert!(layout.active_workspace().unwrap().has_window(&2));
+    check_ops_on_layout(
+        &mut layout,
+        [Op::MoveWorkspaceToIndex {
+            ws_name: None,
+            target_idx: 0,
+        }],
+    );
+    assert!(layout.active_workspace().unwrap().has_window(&2));
+
+    // Focus the workspace with window 1, then move the one with window 2 (below it) to the top.
+    let mut layout = check_ops_with_options(options, ops);
+    check_ops_on_layout(&mut layout, [Op::FocusWorkspaceUp]);
+    assert!(layout.active_workspace().unwrap().has_window(&1));
+    let MonitorSet::Normal { monitors, .. } = &mut layout.monitor_set else {
+        unreachable!()
+    };
+    let old_idx = monitors[0]
+        .workspaces
+        .iter()
+        .position(|ws| ws.has_window(&2))
+        .unwrap();
+    monitors[0].move_workspace_to_idx(old_idx, 0);
+    layout.verify_invariants();
+    assert!(layout.active_workspace().unwrap().has_window(&1));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: if std::env::var_os("RUN_SLOW_TESTS").is_none() {

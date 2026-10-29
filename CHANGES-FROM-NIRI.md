@@ -194,6 +194,9 @@ The spawn fix is about a background thread that never finished.
 - **Cursor shape after resize and view-drag grabs.**
     In niri, the resize grab resets the cursor shape without queueing a redraw, and the spatial movement grab redraws only the output the gesture ran on, so an output that nothing else redraws (for example with the cursor over empty space on another output) keeps the resize or drag shape until its next redraw.
     nori redraws the outputs that show the cursor when the grab ends ([#65](https://github.com/Deliveos/nori/pull/65); fixes [#45](https://github.com/Deliveos/nori/issues/45)).
+- **Focus after `move-workspace-to-index` with `empty-workspace-above-first`.**
+    In niri, moving a workspace to the top with this option compares the focused workspace's index after inserting the new empty workspace with an index from before, so focus can jump to a neighbouring workspace, or to the moved one, without animation.
+    nori keeps the same workspace focused ([#200](https://github.com/Deliveos/nori/pull/200); fixes [#172](https://github.com/Deliveos/nori/issues/172)).
 
 ### Screencasts
 
