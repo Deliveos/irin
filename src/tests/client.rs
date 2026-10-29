@@ -435,6 +435,24 @@ impl State {
         parent: &XdgSurface,
         gravity: xdg_positioner::Gravity,
     ) -> (WlSurface, XdgSurface, XdgPopup) {
+        self.create_popup_with(Some(parent), gravity, |_| ())
+    }
+
+    /// Like [`Self::create_popup()`], for a layer surface parent.
+    pub fn create_layer_popup(
+        &mut self,
+        parent: &ZwlrLayerSurfaceV1,
+        gravity: xdg_positioner::Gravity,
+    ) -> (WlSurface, XdgSurface, XdgPopup) {
+        self.create_popup_with(None, gravity, |popup| parent.get_popup(popup))
+    }
+
+    fn create_popup_with(
+        &mut self,
+        parent: Option<&XdgSurface>,
+        gravity: xdg_positioner::Gravity,
+        set_parent: impl FnOnce(&XdgPopup),
+    ) -> (WlSurface, XdgSurface, XdgPopup) {
         let surface = self.create_surface();
         let xdg_wm_base = self.xdg_wm_base.as_ref().unwrap();
         let positioner = xdg_wm_base.create_positioner(&self.qh, ());
@@ -443,7 +461,8 @@ impl State {
         positioner.set_anchor(xdg_positioner::Anchor::TopLeft);
         positioner.set_gravity(gravity);
         let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &self.qh, PopupXdgSurface);
-        let popup = xdg_surface.get_popup(Some(parent), &positioner, &self.qh, ());
+        let popup = xdg_surface.get_popup(parent, &positioner, &self.qh, ());
+        set_parent(&popup);
         positioner.destroy();
         surface.commit();
         (surface, xdg_surface, popup)
