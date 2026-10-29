@@ -3222,12 +3222,10 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        // The window can be gone: for example, the window being moved interactively can close
+        // while its move grab is still active, and the grab toggles floating on a button press.
         let workspace = if let Some(window) = window {
-            Some(
-                self.workspaces_mut()
-                    .find(|ws| ws.has_window(window))
-                    .unwrap(),
-            )
+            self.workspaces_mut().find(|ws| ws.has_window(window))
         } else {
             self.active_workspace_mut()
         };
@@ -3249,11 +3247,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         let workspace = if let Some(window) = window {
-            Some(
-                self.workspaces_mut()
-                    .find(|ws| ws.has_window(window))
-                    .unwrap(),
-            )
+            self.workspaces_mut().find(|ws| ws.has_window(window))
         } else {
             self.active_workspace_mut()
         };
