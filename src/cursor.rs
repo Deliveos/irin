@@ -301,6 +301,11 @@ impl XCursor {
 
         images.retain(move |image| image.width == width && image.height == height);
 
+        // We only use pixels_rgba, so free the other copy of the pixels.
+        for image in &mut images {
+            image.pixels_argb = Vec::new();
+        }
+
         let animation_duration = images
             .iter()
             .fold(0u32, |acc, image| acc.saturating_add(image.delay));
@@ -396,5 +401,15 @@ mod tests {
         assert_eq!(cursor.animation_duration, u32::MAX);
         assert_eq!(cursor.frame(0).0, 0);
         assert_eq!(cursor.frame(u32::MAX).0, 0);
+    }
+
+    #[test]
+    fn unused_pixel_copy_is_freed() {
+        let cursor = XCursor::from_images(vec![image(24, 0), image(24, 10)], 24).unwrap();
+        for frame in cursor.frames() {
+            assert_eq!(frame.pixels_rgba, [1, 2, 3, 4]);
+            assert!(frame.pixels_argb.is_empty());
+            assert_eq!(frame.pixels_argb.capacity(), 0);
+        }
     }
 }

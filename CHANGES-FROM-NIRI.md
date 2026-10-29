@@ -326,6 +326,9 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
 - **Layer surfaces of unplugged outputs.**
     niri keeps an entry for each layer surface (bar, wallpaper) of an output that is removed, one more on each unplug.
     nori removes them with the output ([0280b8b2](https://github.com/Deliveos/nori/commit/0280b8b2f20e84788b614db46d6face684804b44); fixes [#18](https://github.com/Deliveos/nori/issues/18)).
+- **Cursor pixels.**
+    The Xcursor parser returns every frame's pixels in two byte orders, and niri keeps both for every loaded cursor although it reads only one.
+    nori frees the unused copy when it loads a cursor, which saves width × height × 4 bytes per frame, for example 576 KiB (48 × 48 × 4 × 64) for a 64-frame animated cursor at size 48 ([#202](https://github.com/Deliveos/nori/pull/202); fixes [#180](https://github.com/Deliveos/nori/issues/180)).
 - **ScreenCast D-Bus sessions.**
     niri keeps every ScreenCast D-Bus session it ever created in a list that is never read.
     nori removes that list; the same commit removes other dead code ([63f4474e](https://github.com/Deliveos/nori/commit/63f4474ee4acf4a0bff44844ee3e0cbdadbd3059); part of [#24](https://github.com/Deliveos/nori/issues/24)).
