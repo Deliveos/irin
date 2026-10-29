@@ -33,6 +33,9 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
 use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     self, ZwlrLayerSurfaceV1,
 };
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_head_v1::{self, ZwlrOutputHeadV1};
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::{self, ZwlrOutputManagerV1};
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_mode_v1::{self, ZwlrOutputModeV1};
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
@@ -88,10 +91,13 @@ pub struct State {
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub foreign_toplevel_list: Option<ExtForeignToplevelListV1>,
+    pub output_manager: Option<ZwlrOutputManagerV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
     pub foreign_toplevels: Vec<ForeignToplevel>,
+    pub output_heads: Vec<OutputHead>,
+    pub output_modes: HashMap<ZwlrOutputModeV1, OutputMode>,
 }
 
 /// A toplevel announced through ext-foreign-toplevel-list.
@@ -101,6 +107,22 @@ pub struct ForeignToplevel {
     pub title: Option<String>,
     pub app_id: Option<String>,
     pub closed: bool,
+}
+
+/// A head announced through wlr-output-management.
+#[derive(Debug)]
+pub struct OutputHead {
+    pub head: ZwlrOutputHeadV1,
+    pub name: Option<String>,
+    pub enabled: bool,
+    pub current_mode: Option<ZwlrOutputModeV1>,
+}
+
+/// A mode announced through wlr-output-management.
+#[derive(Debug, Default)]
+pub struct OutputMode {
+    pub size: (i32, i32),
+    pub refresh: i32,
 }
 
 pub struct Window {
@@ -309,9 +331,12 @@ impl Client {
             viewporter: None,
             ksim: None,
             foreign_toplevel_list: None,
+            output_manager: None,
             windows: Vec::new(),
             layers: Vec::new(),
             foreign_toplevels: Vec::new(),
+            output_heads: Vec::new(),
+            output_modes: HashMap::new(),
         };
 
         Self {
@@ -788,6 +813,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ExtForeignToplevelListV1::interface().name {
                     let version = min(version, ExtForeignToplevelListV1::interface().version);
                     state.foreign_toplevel_list = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwlrOutputManagerV1::interface().name {
+                    let version = min(version, ZwlrOutputManagerV1::interface().version);
+                    state.output_manager = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -1330,6 +1358,94 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for State {
                 toplevel.app_id = Some(app_id)
             }
             ext_foreign_toplevel_handle_v1::Event::Identifier { .. } => (),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<ZwlrOutputManagerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwlrOutputManagerV1,
+        event: <ZwlrOutputManagerV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_output_manager_v1::Event::Head { head } => {
+                state.output_heads.push(OutputHead {
+                    head,
+                    name: None,
+                    enabled: false,
+                    current_mode: None,
+                });
+            }
+            zwlr_output_manager_v1::Event::Done { .. } => (),
+            zwlr_output_manager_v1::Event::Finished => (),
+            _ => unreachable!(),
+        }
+    }
+
+    wayland_client::event_created_child!(State, ZwlrOutputManagerV1, [
+        zwlr_output_manager_v1::EVT_HEAD_OPCODE => (ZwlrOutputHeadV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrOutputHeadV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        head: &ZwlrOutputHeadV1,
+        event: <ZwlrOutputHeadV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let output_head = state
+            .output_heads
+            .iter_mut()
+            .find(|h| h.head == *head)
+            .unwrap();
+
+        match event {
+            zwlr_output_head_v1::Event::Name { name } => output_head.name = Some(name),
+            zwlr_output_head_v1::Event::Mode { mode } => {
+                state.output_modes.insert(mode, OutputMode::default());
+            }
+            zwlr_output_head_v1::Event::Enabled { enabled } => output_head.enabled = enabled != 0,
+            zwlr_output_head_v1::Event::CurrentMode { mode } => {
+                output_head.current_mode = Some(mode)
+            }
+            // Description, position, scale and the other properties aren't needed yet.
+            _ => (),
+        }
+    }
+
+    wayland_client::event_created_child!(State, ZwlrOutputHeadV1, [
+        zwlr_output_head_v1::EVT_MODE_OPCODE => (ZwlrOutputModeV1, ()),
+    ]);
+}
+
+impl Dispatch<ZwlrOutputModeV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        mode: &ZwlrOutputModeV1,
+        event: <ZwlrOutputModeV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let output_mode = state.output_modes.get_mut(mode).unwrap();
+
+        match event {
+            zwlr_output_mode_v1::Event::Size { width, height } => {
+                output_mode.size = (width, height)
+            }
+            zwlr_output_mode_v1::Event::Refresh { refresh } => output_mode.refresh = refresh,
+            zwlr_output_mode_v1::Event::Preferred => (),
+            zwlr_output_mode_v1::Event::Finished => {
+                state.output_modes.remove(mode);
+            }
             _ => unreachable!(),
         }
     }
