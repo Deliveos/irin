@@ -203,8 +203,9 @@ The spawn fix is about a background thread that never finished.
     A frame late by almost a whole interval could also let a duplicate through, for example on a 60 fps cast of a 59.94 Hz output.
     nori moves only late frames back to the ideal time, and restarts the time base after a frame that is almost an interval late ([#115](https://github.com/Deliveos/nori/pull/115), [#120](https://github.com/Deliveos/nori/pull/120); fixes [#114](https://github.com/Deliveos/nori/issues/114), [#118](https://github.com/Deliveos/nori/issues/118)).
 - **Render errors.**
-    After a cast frame fails to render or its buffer can't be bound, nori sends the next frame in full and, with the cursor sent as metadata, sends a changed cursor bitmap again.
-    Mostly this fixes a problem that the buffer-age change below brought in; resetting the cursor state and the reset after a failed bind are new compared with niri ([#120](https://github.com/Deliveos/nori/pull/120); fixes [#116](https://github.com/Deliveos/nori/issues/116)).
+    After a cast frame fails to render, its buffer can't be bound, or its pixels can't be copied into a shared-memory buffer later, nori sends the next frame in full and, with the cursor sent as metadata, sends a changed cursor bitmap again.
+    Mostly this fixes problems that the buffer-age and SHM capture changes below brought in; resetting the cursor state and the reset after a failed bind are new compared with niri ([#120](https://github.com/Deliveos/nori/pull/120), [#138](https://github.com/Deliveos/nori/pull/138); fixes [#116](https://github.com/Deliveos/nori/issues/116), [#129](https://github.com/Deliveos/nori/issues/129)).
+    When a cursor bitmap fails to render, niri sends a transparent one and nothing more until the bitmap changes, so the consumer shows no cursor; nori sends the bitmap again with the next frame ([#138](https://github.com/Deliveos/nori/pull/138); fixes [#130](https://github.com/Deliveos/nori/issues/130)).
 
 ### Session
 
@@ -352,9 +353,8 @@ Open issues in nori's own changes:
 
 - [#134](https://github.com/Deliveos/nori/issues/134): window casts can still get a frame behind the lock screen when PipeWire asks for a redraw.
 - [#132](https://github.com/Deliveos/nori/issues/132): an input method popup on a layer-shell surface has no output until the surface commits again.
-- [#129](https://github.com/Deliveos/nori/issues/129): a failed delayed SHM copy in a screencast doesn't reset the damage trackers.
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
 - [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
-Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#130](https://github.com/Deliveos/nori/issues/130), [#131](https://github.com/Deliveos/nori/issues/131).
+Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#131](https://github.com/Deliveos/nori/issues/131).
