@@ -86,6 +86,9 @@ A crash of the compositor ends the whole session.
 - **Empty hotkey overlay.**
     With `hotkey-overlay { hide-not-bound }` and none of the listed actions bound, niri crashes at startup, because the overlay is shown at startup by default.
     nori draws nothing in that case ([0d82a4c5](https://github.com/Deliveos/nori/commit/0d82a4c560a8a4db81193165309f3ad21d558283); fixes [#12](https://github.com/Deliveos/nori/issues/12)).
+- **Broken Xcursor files.**
+    niri panics when a file of the cursor theme has a valid header but no images, an image size from 2^31 up to 2^31 plus the requested cursor size (larger sizes wrap around and are compared wrongly), or frame delays that add up to more than 2^32 − 1 milliseconds; the release profile checks for overflow too.
+    nori treats a file without images like a missing cursor (it tries the other names of the cursor and then falls back to the default or the built-in cursor), compares sizes in 64-bit arithmetic and caps the total delay at 2^32 − 1 ms, with unit tests for each case in `src/cursor.rs` ([#202](https://github.com/Deliveos/nori/pull/202); fixes [#150](https://github.com/Deliveos/nori/issues/150)).
 - <a id="ipc-request-limit"></a>**IPC request size limit.**
     niri reads an IPC request until a newline with no limit, so a client that never sends one (for example a script piping a large file into the socket) makes it buffer until the out-of-memory killer acts.
     nori reads at most 8 MiB (8388608 bytes) per request line.
