@@ -205,6 +205,7 @@ The spawn fix is about a background thread that never finished.
 - **Render errors.**
     After a cast frame fails to render, its buffer can't be bound, or its pixels can't be copied into a shared-memory buffer later, nori sends the next frame in full and, with the cursor sent as metadata, sends a changed cursor bitmap again.
     Mostly this fixes problems that the buffer-age and SHM capture changes below brought in; resetting the cursor state and the reset after a failed bind are new compared with niri ([#120](https://github.com/Deliveos/nori/pull/120), [#138](https://github.com/Deliveos/nori/pull/138); fixes [#116](https://github.com/Deliveos/nori/issues/116), [#129](https://github.com/Deliveos/nori/issues/129)).
+    When a cursor bitmap fails to render, niri sends a transparent one and nothing more until the bitmap changes, so the consumer shows no cursor; nori sends the bitmap again with the next frame ([#138](https://github.com/Deliveos/nori/pull/138); fixes [#130](https://github.com/Deliveos/nori/issues/130)).
 
 ### Session
 
@@ -359,4 +360,4 @@ Open issues in nori's own changes:
 - [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
-Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#130](https://github.com/Deliveos/nori/issues/130), [#131](https://github.com/Deliveos/nori/issues/131).
+Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#131](https://github.com/Deliveos/nori/issues/131).

@@ -1457,10 +1457,17 @@ impl Cast {
         self.remove_retry_redraw();
         let buffer = pw_buffer.as_ptr();
 
+        if self.cursor_mode == CursorMode::Metadata {
+            let spa_buffer = unsafe { (*buffer).buffer };
+            if !unsafe { add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor) } {
+                // The tracker already counts the bitmap as sent, so make the next frame send it.
+                self.inner.borrow_mut().forget_cursor_bitmap();
+            }
+        }
+
         // Only the cursor changed, so send just its metadata instead of rendering the frame again.
         if cursor_only {
             unsafe {
-                add_cursor_metadata(renderer, (*buffer).buffer, cursor_data, redraw_cursor);
                 mark_buffer_as_metadata_only(pw_buffer, &mut self.sequence_counter);
                 trace!("queueing cursor buffer with seq={}", self.sequence_counter);
                 self.queue_after_sync(renderer, pw_buffer, SyncPoint::signaled(), None);
@@ -1488,11 +1495,6 @@ impl Cast {
 
         unsafe {
             let spa_buffer = (*buffer).buffer;
-
-            if self.cursor_mode == CursorMode::Metadata {
-                add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor);
-            }
-
             let fd = (*(*spa_buffer).datas).fd;
 
             let res = match (*(*spa_buffer).datas).type_ {
@@ -1646,6 +1648,17 @@ impl CastInner {
                 *cursor_damage_tracker = None;
             }
             *last_cursor_location = None;
+        }
+    }
+
+    /// Makes the next frame send the cursor bitmap again.
+    fn forget_cursor_bitmap(&mut self) {
+        if let CastState::Ready {
+            cursor_damage_tracker,
+            ..
+        } = &mut self.state
+        {
+            *cursor_damage_tracker = None;
         }
     }
 
@@ -2130,12 +2143,14 @@ unsafe fn add_invisible_cursor(spa_buffer: *mut spa_buffer) {
     }
 }
 
+/// Returns `false` if the cursor bitmap failed to render, so that the buffer carries a transparent
+/// bitmap instead.
 unsafe fn add_cursor_metadata(
     renderer: &mut GlesRenderer,
     spa_buffer: *mut spa_buffer,
     cursor_data: &CursorData<impl RenderElement<GlesRenderer>>,
     redraw: bool,
-) {
+) -> bool {
     unsafe {
         let cursor_meta_ptr: *mut spa_meta_cursor = spa_buffer_find_meta_data(
             spa_buffer,
@@ -2144,7 +2159,7 @@ unsafe fn add_cursor_metadata(
         )
         .cast();
         let Some(cursor_meta) = cursor_meta_ptr.as_mut() else {
-            return;
+            return true;
         };
 
         cursor_meta.id = 1;
@@ -2156,7 +2171,7 @@ unsafe fn add_cursor_metadata(
         if !redraw {
             trace!("cursor not damaged, skipping rerendering");
             cursor_meta.bitmap_offset = 0;
-            return;
+            return true;
         }
 
         cursor_meta.bitmap_offset = BITMAP_META_OFFSET as _;
@@ -2183,7 +2198,7 @@ unsafe fn add_cursor_metadata(
         );
         if size.w == 0 || size.h == 0 {
             trace!("cursor is invisible, skipping rendering");
-            return;
+            return true;
         }
 
         let _span = tracy_client::span!("add_cursor_metadata render cursor");
@@ -2206,14 +2221,14 @@ unsafe fn add_cursor_metadata(
             Ok(mapping) => mapping,
             Err(err) => {
                 warn!("error rendering cursor: {err:?}");
-                return;
+                return false;
             }
         };
         let pixels = match renderer.map_texture(&mapping) {
             Ok(pixels) => pixels,
             Err(err) => {
                 warn!("error mapping cursor texture: {err:?}");
-                return;
+                return false;
             }
         };
 
@@ -2223,6 +2238,7 @@ unsafe fn add_cursor_metadata(
         bitmap_meta.size.width = size.w as _;
         bitmap_meta.size.height = size.h as _;
         bitmap_meta.stride = size.w * CURSOR_BPP as i32;
+        true
     }
 }
 
