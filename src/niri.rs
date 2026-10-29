@@ -1947,8 +1947,8 @@ impl State {
         if power_key_handling_changed && self.niri.is_session_instance {
             if self.niri.config.borrow().input.disable_power_key_handling {
                 self.niri.inhibit_power_key_fd = None;
-            } else if let Err(err) = self.niri.inhibit_power_key() {
-                warn!("error inhibiting power key: {err:?}");
+            } else {
+                self.niri.inhibit_power_key_in_thread();
             }
         }
 
@@ -3043,28 +3043,46 @@ impl Niri {
 
     #[cfg(feature = "dbus")]
     pub fn inhibit_power_key(&mut self) -> anyhow::Result<()> {
-        use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
-
-        let conn = zbus::blocking::Connection::system()?;
-
-        let message = conn.call_method(
-            Some("org.freedesktop.login1"),
-            "/org/freedesktop/login1",
-            Some("org.freedesktop.login1.Manager"),
-            "Inhibit",
-            &("handle-power-key", "nori", "Power key handling", "block"),
-        )?;
-
-        let fd: zbus::zvariant::OwnedFd = message.body().deserialize()?;
-
-        // Don't leak the fd to child processes.
-        if let Err(err) = fcntl_setfd(&fd, FdFlags::CLOEXEC) {
-            warn!("error setting CLOEXEC on inhibit fd: {err:?}");
-        };
-
-        self.inhibit_power_key_fd = Some(fd);
-
+        self.inhibit_power_key_fd = Some(take_power_key_inhibitor()?);
         Ok(())
+    }
+
+    /// Like [`Self::inhibit_power_key()`], but makes the blocking D-Bus call on another thread, so
+    /// that a slow logind doesn't stall the compositor.
+    #[cfg(feature = "dbus")]
+    pub fn inhibit_power_key_in_thread(&mut self) {
+        let (tx, rx) = calloop::channel::sync_channel(1);
+        let res = self.event_loop.insert_source(rx, |event, _, state| {
+            let calloop::channel::Event::Msg(fd) = event else {
+                return;
+            };
+
+            // The config may have changed again while the call was in flight.
+            if !state.niri.config.borrow().input.disable_power_key_handling {
+                state.niri.inhibit_power_key_fd = Some(fd);
+            }
+        });
+        if let Err(err) = res {
+            warn!("error inserting the power key inhibitor channel: {err:?}");
+            return;
+        }
+
+        let res = thread::Builder::new()
+            .name("Logind Power Key Inhibitor".to_owned())
+            .spawn(move || {
+                let _span = tracy_client::span!("take_power_key_inhibitor");
+
+                match take_power_key_inhibitor() {
+                    Ok(fd) => {
+                        let _ = tx.send(fd);
+                    }
+                    Err(err) => warn!("error inhibiting power key: {err:?}"),
+                }
+            });
+
+        if let Err(err) = res {
+            warn!("error spawning a thread to inhibit the power key: {err:?}");
+        }
     }
 
     /// Repositions all outputs, optionally adding a new output.
@@ -7662,6 +7680,33 @@ fn scale_relocate_crop<E: Element>(
     let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
     let elem = RelocateRenderElement::from_element(elem, ws_geo.loc, Relocate::Relative);
     CropRenderElement::from_element(elem, output_scale, ws_geo)
+}
+
+/// Asks logind to let nori handle the power key, and returns the inhibitor fd.
+///
+/// This makes a blocking D-Bus call.
+#[cfg(feature = "dbus")]
+fn take_power_key_inhibitor() -> anyhow::Result<zbus::zvariant::OwnedFd> {
+    use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
+
+    let conn = zbus::blocking::Connection::system()?;
+
+    let message = conn.call_method(
+        Some("org.freedesktop.login1"),
+        "/org/freedesktop/login1",
+        Some("org.freedesktop.login1.Manager"),
+        "Inhibit",
+        &("handle-power-key", "nori", "Power key handling", "block"),
+    )?;
+
+    let fd: zbus::zvariant::OwnedFd = message.body().deserialize()?;
+
+    // Don't leak the fd to child processes.
+    if let Err(err) = fcntl_setfd(&fd, FdFlags::CLOEXEC) {
+        warn!("error setting CLOEXEC on inhibit fd: {err:?}");
+    };
+
+    Ok(fd)
 }
 
 niri_render_elements! {

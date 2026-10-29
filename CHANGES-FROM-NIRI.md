@@ -214,8 +214,7 @@ The spawn fix is about a background thread that never finished.
     When started with `--session` on systemd, nori stops a running `xdg-desktop-portal.service` without waiting, and D-Bus activation starts it again with nori's environment ([#113](https://github.com/Deliveos/nori/pull/113); fixes [#112](https://github.com/Deliveos/nori/issues/112)).
 - **`disable-power-key-handling` on a live reload.**
     niri takes the logind power-key inhibitor only at startup, but its own power-key action follows the live config, so removing the option on a reload makes niri suspend while logind also acts on the key, by default powering off.
-    In session instances, nori takes or drops the inhibitor when this option changes ([9004e44c](https://github.com/Deliveos/nori/commit/9004e44cb5860979055984c29b05964ef45574ec); fixes [#23](https://github.com/Deliveos/nori/issues/23)).
-    Taking it is a blocking D-Bus call on the main thread: [#135](https://github.com/Deliveos/nori/issues/135).
+    In session instances, nori takes or drops the inhibitor when this option changes, and takes it on a separate thread, since the D-Bus call blocks ([9004e44c](https://github.com/Deliveos/nori/commit/9004e44cb5860979055984c29b05964ef45574ec), [#141](https://github.com/Deliveos/nori/pull/141); fixes [#23](https://github.com/Deliveos/nori/issues/23), [#135](https://github.com/Deliveos/nori/issues/135)).
 
 ## Performance
 
@@ -352,7 +351,6 @@ To see the upstream commits that nori doesn't have yet, run `git fetch https://g
 Open issues in nori's own changes:
 
 - [#134](https://github.com/Deliveos/nori/issues/134): window casts can still get a frame behind the lock screen when PipeWire asks for a redraw.
-- [#135](https://github.com/Deliveos/nori/issues/135): taking the power-key inhibitor on a config reload blocks the main thread.
 - [#132](https://github.com/Deliveos/nori/issues/132): an input method popup on a layer-shell surface has no output until the surface commits again.
 - [#129](https://github.com/Deliveos/nori/issues/129): a failed delayed SHM copy in a screencast doesn't reset the damage trackers.
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
