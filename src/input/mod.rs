@@ -37,7 +37,7 @@ use smithay::input::{tablet, SeatHandler};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Transform, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardDevice;
@@ -339,6 +339,11 @@ impl State {
             output.and_then(|output| {
                 let monitor = self.niri.layout.monitor_for_output(output)?;
                 let mut rect = monitor.active_window_visual_rectangle()?;
+                // A window with a width or height of 0 has no area to map to (and dividing by its
+                // size below would give NaN), so map as if no window were focused.
+                if rect.size.w <= 0. || rect.size.h <= 0. {
+                    return None;
+                }
                 let output_geo = self.niri.global_space.output_geometry(output)?;
                 rect.loc += output_geo.loc.to_f64();
                 Some((rect, output))
@@ -403,9 +408,7 @@ impl State {
             pos.y *= target_geo.size.h;
         }
 
-        pos.x = pos.x.clamp(0.0, target_geo.size.w - px);
-        pos.y = pos.y.clamp(0.0, target_geo.size.h - px);
-        Some(pos + target_geo.loc)
+        Some(clamp_tablet_position(pos, target_geo.size, px) + target_geo.loc)
     }
 
     fn is_inhibiting_shortcuts(&self) -> bool {
@@ -5577,6 +5580,21 @@ pub fn mods_with_tablet_stylus_binds(mod_key: ModKey, binds: &Binds) -> HashSet<
     )
 }
 
+/// Clamps a tablet position to an area of `size`, leaving out the last pixel (`px`).
+///
+/// The area can be narrower than one pixel (the visible part of the focused window with
+/// map-to-focused-window), and f64::clamp() panics when max < min, so clamp to 0 then.
+fn clamp_tablet_position(
+    pos: Point<f64, Logical>,
+    size: Size<f64, Logical>,
+    px: f64,
+) -> Point<f64, Logical> {
+    Point::from((
+        pos.x.clamp(0., f64::max(size.w - px, 0.)),
+        pos.y.clamp(0., f64::max(size.h - px, 0.)),
+    ))
+}
+
 fn grab_allows_hot_corner(grab: &(dyn PointerGrab<State> + 'static)) -> bool {
     let grab = grab.as_any();
 
@@ -5637,6 +5655,24 @@ fn make_binds_iter<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tablet_position_in_area_thinner_than_a_pixel() {
+        let px = 1. / 1.5;
+        let pos = Point::from((5., 5.));
+
+        let clamped = clamp_tablet_position(pos, Size::from((0.25, 100.)), px);
+        assert_eq!(clamped, Point::from((0., 5.)));
+
+        let clamped = clamp_tablet_position(pos, Size::from((100., 0.25)), px);
+        assert_eq!(clamped, Point::from((5., 0.)));
+
+        let clamped = clamp_tablet_position(pos, Size::from((0., 0.)), px);
+        assert_eq!(clamped, Point::from((0., 0.)));
+
+        let clamped = clamp_tablet_position(pos, Size::from((2., 2.)), px);
+        assert_eq!(clamped, Point::from((2. - px, 2. - px)));
+    }
 
     const CLOSE_KEYSYM: Keysym = Keysym::q;
     const CLOSE_KEY_CODE: Keycode = Keycode::new(CLOSE_KEYSYM.raw());
