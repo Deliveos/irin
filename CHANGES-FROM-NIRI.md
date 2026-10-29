@@ -158,6 +158,9 @@ The spawn fix is about a background thread that never finished.
 - **Panel orientation applied twice.**
     niri reports the transform with the DRM panel orientation applied, and stores the transform a client sends back as the configured one, so the orientation is added a second time and the screen turns.
     nori stores the requested transform minus the panel orientation ([#123](https://github.com/Deliveos/nori/pull/123); fixes [#100](https://github.com/Deliveos/nori/issues/100)).
+- **Current mode after the mode list changes.**
+    Switching between a normal mode and a custom mode or modeline adds or removes a mode, and niri then doesn't tell wlr-output-management clients the new current mode, so a client that was already running shows another mode as current, and sending it back switches to that mode; turning on an output with a custom mode isn't reported to them at all.
+    nori sends the current mode, and that the output is on, whenever they change ([#139](https://github.com/Deliveos/nori/pull/139); fixes [#131](https://github.com/Deliveos/nori/issues/131)).
 
 ### Screenshots
 
@@ -357,4 +360,4 @@ Open issues in nori's own changes:
 - [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
-Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#131](https://github.com/Deliveos/nori/issues/131).
+Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay).

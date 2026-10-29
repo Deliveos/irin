@@ -159,11 +159,11 @@ impl OutputManagementManagerState {
                     }
                 }
 
+                // The clients' mode lists were updated above, so the new index is valid for them
+                // even when the number of modes changed.
                 match (old.current_mode, conf.current_mode) {
                     (Some(old_index), Some(new_index)) => {
-                        if old.modes.len() == conf.modes.len()
-                            && (modes_changed || old_index != new_index)
-                        {
+                        if modes_changed || old_index != new_index {
                             changed = true;
                             for client in self.clients.values() {
                                 if let Some((head, modes)) = client.heads.get(output) {
@@ -187,18 +187,14 @@ impl OutputManagementManagerState {
                         }
                     }
                     (None, Some(new_index)) => {
-                        if old.modes.len() == conf.modes.len() {
-                            changed = true;
-                            for client in self.clients.values() {
-                                if let Some((head, modes)) = client.heads.get(output) {
-                                    head.enabled(1);
-                                    if let Some(mode) = modes.get(new_index) {
-                                        head.current_mode(mode);
-                                    } else {
-                                        error!(
-                                            "output new mode doesnt exist for the client's output"
-                                        );
-                                    }
+                        changed = true;
+                        for client in self.clients.values() {
+                            if let Some((head, modes)) = client.heads.get(output) {
+                                head.enabled(1);
+                                if let Some(mode) = modes.get(new_index) {
+                                    head.current_mode(mode);
+                                } else {
+                                    error!("output new mode doesnt exist for the client's output");
                                 }
                             }
                         }
