@@ -144,6 +144,7 @@ impl State {
     fn redraw_cast(&mut self, stream_id: CastStreamId) {
         let _span = tracy_client::span!("State::redraw_cast");
 
+        let is_locked = self.niri.is_locked();
         let casts = &mut self.niri.casting.casts;
         let Some(idx) = casts.iter().position(|cast| cast.stream_id == stream_id) else {
             warn!("cast to redraw is missing");
@@ -170,6 +171,9 @@ impl State {
                 }
                 return;
             }
+            // Window casts render the window directly, so they'd bypass the lock screen. Unlocking
+            // redraws them.
+            CastTarget::Window { .. } if is_locked => return,
             CastTarget::Window { id } => *id,
         };
 
