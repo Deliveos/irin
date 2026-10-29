@@ -148,11 +148,19 @@ struct CastInner {
     /// submitting completed buffers to PipeWire.
     ///
     /// SHM buffers also carry their frame, which is copied in once the GPU is done.
-    rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint, Option<PendingDownload>)>,
+    rendering_buffers: Vec<(NonNull<pw_buffer>, SyncPoint, Option<PendingShmFrame>)>,
     /// When we last warned about frames skipped for lack of a free buffer.
     last_no_buffer_warning: Option<Duration>,
     /// Frames skipped for lack of a free buffer during this cast.
     skipped_frames: u64,
+}
+
+/// A frame rendered for an SHM buffer, waiting for the GPU before it's copied in.
+#[derive(Debug)]
+struct PendingShmFrame {
+    download: PendingDownload,
+    /// Whether the buffer carries a new cursor bitmap.
+    redraw_cursor: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1256,12 +1264,16 @@ impl Cast {
                 .collect()
         };
 
-        for (buffer, _, download) in completed {
-            if let Some(download) = download {
+        for (buffer, _, frame) in completed {
+            if let Some(frame) = frame {
                 // The GPU is done, so mapping the download doesn't wait for it.
-                if let Err(err) = self.copy_shm_frame(renderer.as_deref_mut(), buffer, &download) {
+                let res = self.copy_shm_frame(renderer.as_deref_mut(), buffer, &frame.download);
+                if let Err(err) = res {
                     warn!("error copying frame into shm buffer: {err:?}");
                     unsafe { return_unused_buffer(&self.stream, buffer) };
+                    // The trackers counted this frame as sent when it was rendered.
+                    let mut inner = self.inner.borrow_mut();
+                    inner.forget_unsent_frame(frame.redraw_cursor);
                     continue;
                 }
             }
@@ -1297,7 +1309,7 @@ impl Cast {
         renderer: &mut GlesRenderer,
         pw_buffer: NonNull<pw_buffer>,
         sync_point: SyncPoint,
-        download: Option<PendingDownload>,
+        shm_frame: Option<PendingShmFrame>,
     ) {
         let _span = tracy_client::span!("Cast::queue_after_sync");
 
@@ -1325,7 +1337,7 @@ impl Cast {
 
         inner
             .rendering_buffers
-            .push((pw_buffer, sync_point, download));
+            .push((pw_buffer, sync_point, shm_frame));
         drop(inner);
 
         match sync_fd {
@@ -1534,7 +1546,11 @@ impl Cast {
                 Ok((sync_point, buf, download)) => {
                     mark_buffer_as_good(pw_buffer, &mut self.sequence_counter, buf);
                     trace!("queueing buffer with seq={}", self.sequence_counter);
-                    self.queue_after_sync(renderer, pw_buffer, sync_point, download);
+                    let shm_frame = download.map(|download| PendingShmFrame {
+                        download,
+                        redraw_cursor,
+                    });
+                    self.queue_after_sync(renderer, pw_buffer, sync_point, shm_frame);
                     true
                 }
                 Err(err) => {
