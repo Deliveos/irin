@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use niri_config::Config;
 
 use super::*;
@@ -76,4 +78,27 @@ fn screenshot_threads_are_limited() {
         std::thread::yield_now();
     }
     niri.spawn_screenshot_thread(|| ()).unwrap();
+}
+
+#[test]
+fn egl_screenshot_ui_opens_without_a_screenshot_of_the_default_output() {
+    let mut f = set_up(Config::default());
+    f.add_output(2, (640, 480));
+    let default_output = f.niri_output(1);
+    let other_output = f.niri_output(2);
+
+    let state = f.niri_state();
+    let niri = &mut state.niri;
+    state.backend.with_primary_renderer(|renderer| {
+        // As if the default output's screenshot failed to render.
+        let mut screenshots: HashMap<_, _> = niri.capture_screenshots(renderer).collect();
+        screenshots.remove(&default_output);
+
+        let ui = &mut niri.screenshot_ui;
+        assert!(ui.open(renderer, screenshots, default_output, false, None));
+        // Both look up the selection's output among the screenshots.
+        ui.capture(renderer).unwrap();
+        ui.move_left();
+        assert_eq!(ui.selection_output(), Some(&other_output));
+    });
 }

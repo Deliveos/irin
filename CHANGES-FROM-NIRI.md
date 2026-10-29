@@ -112,6 +112,9 @@ A crash of the compositor ends the whole session.
     A longer request gets the reply `{"Err":"request is longer than 8388608 bytes"}`, the connection is closed, and the warning is logged.
     The limit was 1 MiB at first and was raised to 8 MiB because spawn requests with a long argument list (about 22000 paths) went over 1 MiB.
     `nori msg` shows that reply instead of "Broken pipe (os error 32)" since [#93](https://github.com/Deliveos/nori/pull/93), which reads the reply even when the rest of its write fails ([#64](https://github.com/Deliveos/nori/pull/64), [#73](https://github.com/Deliveos/nori/pull/73), [#93](https://github.com/Deliveos/nori/pull/93); fixes [#49](https://github.com/Deliveos/nori/issues/49), [#69](https://github.com/Deliveos/nori/issues/69), [#74](https://github.com/Deliveos/nori/issues/74)).
+- **Screenshot UI when an output fails to render.**
+    niri leaves out outputs whose render fails when it opens the screenshot UI, but still puts the initial selection on the output under the cursor (or the focused one), so capturing, moving or resizing the selection then panics if that output was among the failed ones.
+    nori puts the selection on an output that has a screenshot, and has a test for it in `src/tests/screenshot.rs` ([#206](https://github.com/Deliveos/nori/pull/206); fixes [#187](https://github.com/Deliveos/nori/issues/187)).
 - <a id="displayconfig-scale"></a>**NaN scale through DisplayConfig.**
     In niri, `org.gnome.Mutter.DisplayConfig.ApplyMonitorsConfig` puts the requested scale into the output config unchecked; a NaN scale ends in a division by zero, so any process on the session bus can crash the compositor.
     nori rejects scales that are NaN, infinite, zero or negative with the D-Bus error "Invalid scale …" before applying anything (niri clamps the non-NaN ones to the 0.1–10 range) ([#96](https://github.com/Deliveos/nori/pull/96); fixes [#95](https://github.com/Deliveos/nori/issues/95)).
