@@ -21,8 +21,8 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{self, Resource, WEnum};
 use smithay::utils::{Logical, Point, Rectangle, Serial};
 use smithay::wayland::compositor::{
-    add_blocker, add_pre_commit_hook, with_states, BufferAssignment, CompositorHandler as _,
-    HookId, SurfaceAttributes,
+    add_blocker, add_pre_commit_hook, with_states, with_surface_tree_downward, BufferAssignment,
+    CompositorHandler as _, HookId, SurfaceAttributes, TraversalAction,
 };
 use smithay::wayland::dmabuf::get_dmabuf;
 use smithay::wayland::input_method::InputMethodSeat;
@@ -1281,13 +1281,29 @@ impl State {
         }
     }
 
-    /// Makes the window that owns the popup send `wl_surface.enter` to the popup's surfaces.
+    /// Makes the popup's surfaces enter the outputs of the window or layer surface that owns it.
     pub fn queue_popup_output_refresh(&self, popup: &PopupKind) {
         let Ok(root) = find_popup_root_surface(popup) else {
             return;
         };
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&root) {
             mapped.set_needs_output_refresh();
+        } else if let Some(output) = self.niri.layout.outputs().find(|o| {
+            let map = layer_map_for_output(o);
+            map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        }) {
+            // LayerMap::arrange() enters the popups of all layer surfaces on the output, but it
+            // only runs when a layer surface there commits, maps or unmaps, or the output changes.
+            // Without this, a popup that maps, or an input method popup that moves to a layer
+            // surface, would have no output until then.
+            with_surface_tree_downward(
+                popup.wl_surface(),
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, _, _| output.enter(surface),
+                |_, _, _| true,
+            );
         }
     }
 

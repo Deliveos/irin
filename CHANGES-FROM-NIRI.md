@@ -187,7 +187,9 @@ The spawn fix is about a background thread that never finished.
 - **Input method popups that move to another window.**
     When focus moves, niri doesn't send `wl_surface.leave` for the old window's output to the input method popup, so a client can keep drawing it at the old output's scale.
     nori sends leave for every output when the popup is dismissed; the popup then enters the new window's output as before ([#126](https://github.com/Deliveos/nori/pull/126); fixes [#98](https://github.com/Deliveos/nori/issues/98)).
-    This change left popups on layer-shell surfaces without an output until the surface commits again: [#132](https://github.com/Deliveos/nori/issues/132).
+- **Popups of layer-shell surfaces.**
+    niri sends `wl_surface.enter` to a popup of a layer-shell surface only when the layer surfaces of that output are arranged (when one of them commits, maps or unmaps, or the output changes), so a new popup (a bar's menu, an input method popup in a launcher) has no output until then; since the change above, an input method popup on a layer surface also lost its output each time text input was enabled again.
+    nori enters the popup on the layer surface's output right away ([#142](https://github.com/Deliveos/nori/pull/142); fixes [#132](https://github.com/Deliveos/nori/issues/132)).
 - **Resize animation flash.**
     niri takes the starting snapshot of a resize animation on the commit that acknowledges the resize, and Firefox has already committed its content at the new size by then, so maximizing or restoring Firefox flashes.
     nori takes the snapshot of a window on screen when the resize is sent to it; off-screen windows, or a scale change before the window answers, fall back to niri's behavior, and with resize animations off nori skips this early snapshot (the snapshot on commit is still taken, as in niri) ([#111](https://github.com/Deliveos/nori/pull/111); fixes [#110](https://github.com/Deliveos/nori/issues/110)).
@@ -353,7 +355,6 @@ To see the upstream commits that nori doesn't have yet, run `git fetch https://g
 
 Open issues in nori's own changes:
 
-- [#132](https://github.com/Deliveos/nori/issues/132): an input method popup on a layer-shell surface has no output until the surface commits again.
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
 - [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
