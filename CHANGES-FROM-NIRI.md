@@ -220,6 +220,9 @@ The spawn fix is about a background thread that never finished.
     niri moves frames sent slightly early forward to the ideal time, so the time base ends up ahead of the frame that was sent; a second redraw for the same target then sends a duplicate frame and logs "target frame time is below last".
     A frame late by almost a whole interval could also let a duplicate through, for example on a 60 fps cast of a 59.94 Hz output.
     nori moves only late frames back to the ideal time, and restarts the time base after a frame that is almost an interval late ([#115](https://github.com/Deliveos/nori/pull/115), [#120](https://github.com/Deliveos/nori/pull/120); fixes [#114](https://github.com/Deliveos/nori/issues/114), [#118](https://github.com/Deliveos/nori/issues/118)).
+- **ScreenCast `Start` called twice.**
+    niri's ScreenCast D-Bus service checks a "started" flag on each stream but never sets it, so every `org.gnome.Mutter.ScreenCast.Session.Start` call starts another PipeWire stream for each stream of the session, with the same stream id.
+    nori sets the flag, so a later `Start` call doesn't start a stream again; it still starts streams recorded after the first `Start` ([#207](https://github.com/Deliveos/nori/pull/207); fixes [#170](https://github.com/Deliveos/nori/issues/170)).
 - **Render errors.**
     After a cast frame fails to render, its buffer can't be bound, or its pixels can't be copied into a shared-memory buffer later, nori sends the next frame in full and, with the cursor sent as metadata, sends a changed cursor bitmap again.
     Mostly this fixes problems that the buffer-age and SHM capture changes below brought in; resetting the cursor state and the reset after a failed bind are new compared with niri ([#120](https://github.com/Deliveos/nori/pull/120), [#138](https://github.com/Deliveos/nori/pull/138); fixes [#116](https://github.com/Deliveos/nori/issues/116), [#129](https://github.com/Deliveos/nori/issues/129)).
