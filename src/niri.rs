@@ -65,7 +65,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::WmC
 use smithay::reexports::wayland_protocols_misc::server_decoration as _server_decoration;
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 use smithay::reexports::wayland_server::backend::{
-    ClientData, ClientId, DisconnectReason, GlobalId,
+    ClientData, ClientId, DisconnectReason, GlobalId, ObjectId,
 };
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -263,6 +263,11 @@ pub struct Niri {
 
     /// Layer surfaces which don't have a buffer attached yet.
     pub unmapped_layer_surfaces: HashSet<WlSurface>,
+
+    /// Toplevels and layer surfaces refused because their `wl_surface` already had one.
+    ///
+    /// Their clients are disconnected; an id is removed when smithay reports its object destroyed.
+    pub refused_role_objects: Vec<ObjectId>,
 
     /// Extra data for mapped layer surfaces.
     pub mapped_layer_surfaces: HashMap<LayerSurface, MappedLayer>,
@@ -2874,6 +2879,7 @@ impl Niri {
             output_state: HashMap::new(),
             unmapped_windows: HashMap::new(),
             unmapped_layer_surfaces: HashSet::new(),
+            refused_role_objects: Vec::new(),
             mapped_layer_surfaces: HashMap::new(),
             root_surface: HashMap::new(),
             dmabuf_pre_commit_hook: HashMap::new(),

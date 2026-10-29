@@ -68,6 +68,8 @@ pub struct Client {
     pub qh: QueueHandle<State>,
     pub display: WlDisplay,
     pub state: State,
+    /// Whether the test expects niri to post a protocol error to this client.
+    pub expect_protocol_error: bool,
 }
 
 pub struct State {
@@ -346,17 +348,21 @@ impl Client {
             qh,
             display,
             state,
+            expect_protocol_error: false,
         }
     }
 
     pub fn dispatch(&mut self) {
-        self.event_loop
-            .dispatch(Duration::ZERO, &mut self.state)
-            .unwrap();
+        let res = self.event_loop.dispatch(Duration::ZERO, &mut self.state);
 
         if let Some(error) = self.connection.protocol_error() {
+            if self.expect_protocol_error {
+                return;
+            }
             panic!("{error}");
         }
+
+        res.unwrap();
     }
 
     pub fn send_sync(&self) -> Arc<SyncData> {

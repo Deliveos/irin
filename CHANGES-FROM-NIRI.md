@@ -101,6 +101,10 @@ A crash of the compositor ends the whole session.
 - **Negative `xdg_positioner` parent size.**
     In the same smithay version, a negative `set_parent_size` builds a size that fails a debug assertion, so any client can panic builds with debug assertions (the dev profile and `cargo test`); release builds were not affected.
     The smithay fork clamps negative parent sizes to 0 ([#122](https://github.com/Deliveos/nori/pull/122); fixes [#104](https://github.com/Deliveos/nori/issues/104)).
+- **A second toplevel or layer surface for one `wl_surface`.**
+    smithay accepts a second `xdg_toplevel` for a surface that already has one (`get_toplevel` twice, or through a second `xdg_surface`), and a second layer surface the same way.
+    When the first one isn't mapped yet, niri then hits an `assert!`, so any client (sandboxed ones through xdg-shell) can take the session down with two requests; when it is mapped, niri tracks a second window or layer surface for the same `wl_surface`.
+    nori disconnects such a client with a protocol error (`already_constructed` on the `xdg_surface`, or `invalid_surface_state` on the new layer surface), and has four regression tests for it in `src/tests/crash_regressions.rs` ([#197](https://github.com/Deliveos/nori/pull/197); fixes [#144](https://github.com/Deliveos/nori/issues/144)).
 
 Most crash fixes from the older work (output positions, workspaces, the window switcher click, clipboard writer threads) come with client-server regression tests in `src/tests/crash_regressions.rs`, which niri doesn't have ([4a000d50](https://github.com/Deliveos/nori/commit/4a000d504c9ab0fd8b7c731a004a90a68b353dd7)); the spring fix has unit tests, the hotkey overlay fix has only a unit test of its precondition (it doesn't call `render()`), and the `stop-cast` and custom mode fixes have none.
 Of the later crash fixes above, the IPC request limit and both `xdg_positioner` fixes have cases in that file, and the DisplayConfig scale fix has a unit test in `src/dbus/mutter_display_config.rs`.

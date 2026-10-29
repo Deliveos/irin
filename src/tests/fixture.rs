@@ -7,6 +7,7 @@ use calloop::generic::Generic;
 use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use niri_config::Config;
 use smithay::output::Output;
+use wayland_client::backend::protocol::ProtocolError;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
@@ -130,6 +131,21 @@ impl Fixture {
         while !data.done.load(Ordering::Relaxed) {
             self.dispatch();
         }
+    }
+
+    /// Dispatches until niri posts a protocol error to the client, and returns it.
+    pub fn wait_for_protocol_error(&mut self, id: ClientId) -> ProtocolError {
+        let client = self.client(id);
+        client.expect_protocol_error = true;
+        client.connection.flush().unwrap();
+
+        for _ in 0..10000 {
+            self.dispatch();
+            if let Some(error) = self.client(id).connection.protocol_error() {
+                return error;
+            }
+        }
+        panic!("niri didn't post a protocol error");
     }
 
     /// Roundtrip twice in a row.

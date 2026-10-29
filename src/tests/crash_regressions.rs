@@ -1,8 +1,11 @@
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_surface;
 use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
+use wayland_client::Proxy;
 
 use super::*;
-use crate::tests::client::LayerConfigureProps;
+use crate::tests::client::{ClientId, LayerConfigureProps};
 
 #[test]
 fn layer_on_removed_output_is_forgotten() {
@@ -374,4 +377,121 @@ fn huge_popup_positioner_values() {
 
         parent = xdg_surface;
     }
+}
+
+/// Checks that niri still serves clients, and that it forgot the refused objects of the
+/// disconnected one.
+fn assert_niri_alive(f: &mut Fixture) {
+    let id = f.add_client();
+    f.double_roundtrip(id);
+    assert_eq!(f.niri().refused_role_objects, []);
+}
+
+/// Waits until niri disconnects the client with a protocol error, and checks which one.
+fn assert_protocol_error(f: &mut Fixture, id: ClientId, object: &impl Proxy, code: u32) {
+    let error = f.wait_for_protocol_error(id);
+    let object = object.id();
+    assert_eq!(
+        (error.object_interface.as_str(), error.object_id, error.code),
+        (object.interface().name, object.protocol_id(), code),
+        "{error}"
+    );
+}
+
+#[test]
+fn second_toplevel_on_same_xdg_surface() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let state = &mut f.client(id).state;
+    let qh = state.qh.clone();
+    let xdg_wm_base = state.xdg_wm_base.clone().unwrap();
+    let surface = state.create_surface();
+    let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &qh, ());
+    let _first = xdg_surface.get_toplevel(&qh, ());
+    let _second = xdg_surface.get_toplevel(&qh, ());
+
+    let code = xdg_surface::Error::AlreadyConstructed as u32;
+    assert_protocol_error(&mut f, id, &xdg_surface, code);
+    assert_niri_alive(&mut f);
+}
+
+#[test]
+fn second_toplevel_for_mapped_window() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    window.attach_new_buffer();
+    window.set_size(100, 100);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+    assert_eq!(f.niri().layout.windows().count(), 1);
+
+    // A second xdg_surface for the same wl_surface.
+    let state = &mut f.client(id).state;
+    let qh = state.qh.clone();
+    let xdg_wm_base = state.xdg_wm_base.clone().unwrap();
+    let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &qh, ());
+    let _second = xdg_surface.get_toplevel(&qh, ());
+
+    let code = xdg_surface::Error::AlreadyConstructed as u32;
+    assert_protocol_error(&mut f, id, &xdg_surface, code);
+    assert_niri_alive(&mut f);
+}
+
+#[test]
+fn second_layer_surface_for_same_surface() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let state = &mut f.client(id).state;
+    let qh = state.qh.clone();
+    let layer_shell = state.layer_shell.clone().unwrap();
+    let surface = state.create_surface();
+    let _first = layer_shell.get_layer_surface(&surface, None, Layer::Top, String::new(), &qh, ());
+    let second = layer_shell.get_layer_surface(&surface, None, Layer::Top, String::new(), &qh, ());
+
+    let code = zwlr_layer_surface_v1::Error::InvalidSurfaceState as u32;
+    assert_protocol_error(&mut f, id, &second, code);
+    assert_niri_alive(&mut f);
+}
+
+#[test]
+fn second_layer_surface_for_mapped_layer() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let layer = f.client(id).create_layer(None, Layer::Top, "bar");
+    let surface = layer.surface.clone();
+    layer.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Left | Anchor::Right | Anchor::Top),
+        size: Some((0, 50)),
+        ..Default::default()
+    });
+    layer.commit();
+    f.roundtrip(id);
+    let layer = f.client(id).layer(&surface);
+    layer.attach_new_buffer();
+    layer.set_size(100, 50);
+    layer.ack_last_and_commit();
+    f.double_roundtrip(id);
+    assert_eq!(f.niri().mapped_layer_surfaces.len(), 1);
+
+    let state = &mut f.client(id).state;
+    let qh = state.qh.clone();
+    let layer_shell = state.layer_shell.clone().unwrap();
+    let second = layer_shell.get_layer_surface(&surface, None, Layer::Top, String::new(), &qh, ());
+
+    let code = zwlr_layer_surface_v1::Error::InvalidSurfaceState as u32;
+    assert_protocol_error(&mut f, id, &second, code);
+    assert_niri_alive(&mut f);
 }
