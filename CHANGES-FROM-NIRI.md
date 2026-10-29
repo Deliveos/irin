@@ -95,6 +95,10 @@ A crash of the compositor ends the whole session.
 - <a id="displayconfig-scale"></a>**NaN scale through DisplayConfig.**
     In niri, `org.gnome.Mutter.DisplayConfig.ApplyMonitorsConfig` puts the requested scale into the output config unchecked; a NaN scale ends in a division by zero, so any process on the session bus can crash the compositor.
     nori rejects scales that are NaN, infinite, zero or negative with the D-Bus error "Invalid scale …" before applying anything (niri clamps the non-NaN ones to the 0.1–10 range) ([#96](https://github.com/Deliveos/nori/pull/96); fixes [#95](https://github.com/Deliveos/nori/issues/95)).
+- **Screencast max framerate of 0/0.**
+    niri divides by the numerator of the max framerate that a screencast consumer negotiates, inside a PipeWire callback, where a panic aborts the process.
+    SPA compares fractions by cross-multiplying, so 0/0 counts as inside the offered range; whether PipeWire passes such a value on to niri was not tested.
+    nori treats a zero numerator as no framerate limit, and has a unit test for it in `src/screencasting/pw_utils.rs` ([#203](https://github.com/Deliveos/nori/pull/203); fixes [#186](https://github.com/Deliveos/nori/issues/186)).
 - **Huge `xdg_positioner` values.**
     The smithay version that niri uses does plain `i32` arithmetic on the positioner values a client sends, and release builds have overflow checks on, so one popup request such as `set_offset(i32::MAX, 0)` takes the session down.
     nori builds against a smithay fork in which this math saturates (see [Building and packaging](#building-and-packaging)) and has a regression test for it ([#101](https://github.com/Deliveos/nori/pull/101); fixes [#90](https://github.com/Deliveos/nori/issues/90)).
