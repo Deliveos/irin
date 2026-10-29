@@ -72,6 +72,15 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::DecodeScalar<S> for WorkspaceName {
                     None => Vec::new(),
                 };
 
+                // Workspace names go to Wayland clients (ext-workspace), which can't take a NUL.
+                if s.contains('\0') {
+                    ctx.emit_error(DecodeError::conversion(
+                        val,
+                        "workspace names must not contain a null byte",
+                    ));
+                    return Ok(Self(String::new()));
+                }
+
                 if name_set.iter().any(|name| name.eq_ignore_ascii_case(s)) {
                     ctx.emit_error(DecodeError::unexpected(
                         val,

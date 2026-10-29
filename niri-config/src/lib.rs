@@ -744,6 +744,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_workspace_name_with_null_byte() {
+        assert_parse_error(
+            r#"workspace "a\u{0}b""#,
+            "workspace names must not contain a null byte",
+        );
+    }
+
+    #[test]
     fn parse_bind_section_errors() {
         // A direct action node and a `press` section both specify the press action, so mixing them
         // is reported as mixing the two syntaxes rather than as a duplicate `press` section.

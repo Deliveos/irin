@@ -4583,6 +4583,12 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_workspace_name(&mut self, name: String, reference: Option<WorkspaceReference>) {
+        // Workspace names go to Wayland clients (ext-workspace), where a NUL byte would panic.
+        if name.contains('\0') {
+            warn!("ignoring a workspace name with a NUL byte: {name:?}");
+            return;
+        }
+
         // ignore the request if the name is already used by another workspace
         if self.find_workspace_by_name(&name).is_some() {
             return;
