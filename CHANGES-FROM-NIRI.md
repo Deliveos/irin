@@ -356,7 +356,6 @@ Open issues in nori's own changes:
 - [#132](https://github.com/Deliveos/nori/issues/132): an input method popup on a layer-shell surface has no output until the surface commits again.
 - [#129](https://github.com/Deliveos/nori/issues/129): a failed delayed SHM copy in a screencast doesn't reset the damage trackers.
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
-- [#127](https://github.com/Deliveos/nori/issues/127): `Cargo.lock` pulls a second getrandom version into the normal build.
 - [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
