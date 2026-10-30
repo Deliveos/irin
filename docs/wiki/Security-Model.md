@@ -53,6 +53,10 @@ When the session is locked via [ext-session-lock](https://wayland.app/protocols/
 Only a very small set of safe actions is allowed.
 In particular, spawning will not work, with the exception of binds explicitly configured with `allow-when-locked=true`.
 
+<sup>Since: next release</sup> There is one more exception: if a bind has both `press {}` and `release {}` actions, and its press action ran before the session locked, then its release action runs when the keys are released (or when niri releases all held keys, for example on a VT switch or before suspending), even on the lock screen, whatever the action is.
+This is so that, for example, a push-to-talk bind never gets stuck pressed.
+It can't be triggered from the lock screen: the keys have to be pressed while the session is unlocked.
+
 <sup>Until: next release</sup>
 Importantly, the **quit** action is allowed—you can always quit niri, even when on a lock screen.
 
