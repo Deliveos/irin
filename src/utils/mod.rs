@@ -49,6 +49,7 @@ pub mod region;
 pub mod scale;
 pub mod signals;
 pub mod spawning;
+pub mod surface_roots;
 pub mod transaction;
 pub mod vblank_throttle;
 pub mod watcher;

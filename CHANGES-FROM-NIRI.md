@@ -482,6 +482,13 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
     nori does it only for windows whose surface tree or popups committed ([#71](https://github.com/Deliveos/nori/pull/71); fixes [#51](https://github.com/Deliveos/nori/issues/51)).
     Input method popups moved to another window without a commit missed `wl_surface.enter` because of this; [#92](https://github.com/Deliveos/nori/pull/92) fixed that ([#75](https://github.com/Deliveos/nori/issues/75)).
 
+### Destroying surfaces
+
+- **Root surface cache.**
+    On every `wl_surface` destruction, niri scans its cache of the root of every surface that has committed, so destroying many surfaces at once, for example when a client with many surfaces disconnects, takes time that grows with the square of their number.
+    nori keeps an index from each root to its other surfaces, and removes the destroyed surface's entry and those of the surfaces whose root it was without looking at the others ([#227](https://github.com/Deliveos/nori/pull/227); part of [#154](https://github.com/Deliveos/nori/issues/154)).
+    smithay still scans its list of all surfaces on each destruction (`retain` in `SurfaceUserData::destroyed`); that part of the issue needs a change in the smithay fork.
+
 ### Screencasts and screen capture
 
 - **GetWindows D-Bus call.**
@@ -569,4 +576,4 @@ Open issues in nori's own changes:
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
-Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay).
+Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#154](https://github.com/Deliveos/nori/issues/154) (the smithay part).
