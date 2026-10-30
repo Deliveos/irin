@@ -268,6 +268,11 @@ The spawn fix is about a background thread that never finished.
 - **Cursor after the screenshot UI fails to open.**
     niri sets the crosshair cursor after trying to open the screenshot UI even when it didn't open (for example when every output's screenshot failed to render), so the cursor stays a crosshair until something else sets it.
     nori sets it only when the UI opens. There is no test, because the test fixture can't make every screenshot fail ([#248](https://github.com/Deliveos/nori/pull/248); fixes [#239](https://github.com/Deliveos/nori/issues/239)).
+- **Capture button on another monitor.**
+    In niri's screenshot UI, pressing the capture button on a monitor other than the one with the selection and moving the pointer before releasing takes no screenshot, because the motion is measured on the selection's monitor and the release then checks the wrong point against the button.
+    With monitors placed far apart, the same mix-up can overflow `i32` in the hit test and panic (release builds have overflow checks on).
+    nori measures the motion on the button's monitor while the button is held, and does the hit test in `f64` ([#234](https://github.com/Deliveos/nori/pull/234); fixes [#188](https://github.com/Deliveos/nori/issues/188)).
+    Test: `capture_button_hit_test` in `src/ui/screenshot_ui.rs` covers the overflow; the coordinate fix has no test.
 - **Errors at the end of the PNG write.**
     niri ignores errors from the last part of a D-Bus screenshot's PNG write, so on a full disk a truncated PNG is reported as saved.
     nori reports the error, and the call fails ([#88](https://github.com/Deliveos/nori/pull/88); fixes [#84](https://github.com/Deliveos/nori/issues/84)).

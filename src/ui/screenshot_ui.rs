@@ -862,7 +862,27 @@ impl ScreenshotUi {
         }
     }
 
-    /// The pointer has moved to `point` relative to the current selection output.
+    /// Returns the output that [`Self::pointer_motion`] points are relative to.
+    ///
+    /// That's the selection output, except while the capture button is held: then it's the output
+    /// with that button, which can be another one.
+    pub fn pointer_motion_output(&self) -> Option<&Output> {
+        match self {
+            Self::Open {
+                button:
+                    Button::Down {
+                        on_capture_button: true,
+                        last_pos,
+                        ..
+                    },
+                ..
+            } => Some(&last_pos.0),
+            Self::Open { selection, .. } => Some(&selection.0),
+            Self::Closed { .. } => None,
+        }
+    }
+
+    /// The pointer has moved to `point` relative to [`Self::pointer_motion_output`].
     ///
     /// The point may be outside output bounds.
     pub fn pointer_motion(&mut self, point: Point<i32, Physical>, slot: Option<TouchSlot>) {
@@ -1170,7 +1190,11 @@ fn is_within_capture_button(
     let yc = panel_size.h / 2;
     let pos = pos_within_panel;
 
-    (pos.x - xc) * (pos.x - xc) + (pos.y - yc) * (pos.y - yc) <= radius * radius
+    // In f64, since the point can be far away, and the squares would overflow i32.
+    let dx = f64::from(pos.x) - f64::from(xc);
+    let dy = f64::from(pos.y) - f64::from(yc);
+    let radius = f64::from(radius);
+    dx * dx + dy * dy <= radius * radius
 }
 
 fn render_panel(
@@ -1269,4 +1293,33 @@ fn render_panel(
     )?;
 
     Ok(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_button_hit_test() {
+        let scale = 1.;
+        let panel_size = Size::from((400, 60));
+        let padding: i32 = to_physical_precise_round(scale, PADDING);
+        let radius = to_physical_precise_round::<i32>(scale, RADIUS) - 2;
+
+        let center = Point::from((padding + radius, 30));
+        assert!(is_within_capture_button(scale, panel_size, center));
+
+        // Far-away points, for example in another output's coordinates, must not overflow.
+        for far in [
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MAX),
+            (i32::MIN, i32::MAX),
+        ] {
+            assert!(!is_within_capture_button(
+                scale,
+                panel_size,
+                Point::from(far)
+            ));
+        }
+    }
 }

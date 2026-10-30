@@ -2714,7 +2714,7 @@ impl State {
             }
         }
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
+        if let Some(output) = self.niri.screenshot_ui.pointer_motion_output() {
             let geom = self.niri.global_space.output_geometry(output).unwrap();
             let point = (new_pos - geom.loc.to_f64())
                 .to_physical(output.current_scale().fractional_scale())
@@ -2850,7 +2850,7 @@ impl State {
 
         let pointer = self.niri.seat.get_pointer().unwrap();
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
+        if let Some(output) = self.niri.screenshot_ui.pointer_motion_output() {
             let geom = self.niri.global_space.output_geometry(output).unwrap();
             let point = (pos - geom.loc.to_f64())
                 .to_physical(output.current_scale().fractional_scale())
@@ -3730,7 +3730,7 @@ impl State {
             return;
         };
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
+        if let Some(output) = self.niri.screenshot_ui.pointer_motion_output() {
             let geom = self.niri.global_space.output_geometry(output).unwrap();
             let point = (pos - geom.loc.to_f64())
                 .to_physical(output.current_scale().fractional_scale())
@@ -4617,7 +4617,7 @@ impl State {
         };
         let slot = evt.slot();
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output().cloned() {
+        if let Some(output) = self.niri.screenshot_ui.pointer_motion_output().cloned() {
             let geom = self.niri.global_space.output_geometry(&output).unwrap();
             let point = (pos - geom.loc.to_f64())
                 .to_physical(output.current_scale().fractional_scale())
