@@ -265,6 +265,9 @@ The spawn fix is about a background thread that never finished.
 - **Atomic replace of the fixed-name screenshot.**
     With `screenshot-path null`, every D-Bus screenshot goes to one file, and niri truncates and rewrites it while an earlier caller may still be reading it.
     nori writes to a temporary file next to it and renames it into place when complete ([#85](https://github.com/Deliveos/nori/pull/85); fixes [#83](https://github.com/Deliveos/nori/issues/83)).
+- **Cursor after the screenshot UI fails to open.**
+    niri sets the crosshair cursor after trying to open the screenshot UI even when it didn't open (for example when every output's screenshot failed to render), so the cursor stays a crosshair until something else sets it.
+    nori sets it only when the UI opens. There is no test, because the test fixture can't make every screenshot fail ([#248](https://github.com/Deliveos/nori/pull/248); fixes [#239](https://github.com/Deliveos/nori/issues/239)).
 - **Errors at the end of the PNG write.**
     niri ignores errors from the last part of a D-Bus screenshot's PNG write, so on a full disk a truncated PNG is reported as saved.
     nori reports the error, and the call fails ([#88](https://github.com/Deliveos/nori/pull/88); fixes [#84](https://github.com/Deliveos/nori/issues/84)).

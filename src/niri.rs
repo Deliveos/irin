@@ -2318,11 +2318,15 @@ impl State {
         // Now that we captured the screenshots, clear grabs.
         self.cancel_pointing_grabs();
 
-        self.backend.with_primary_renderer(|renderer| {
+        let opened = self.backend.with_primary_renderer(|renderer| {
             self.niri
                 .screenshot_ui
                 .open(renderer, screenshots, default_output, show_pointer, path)
         });
+        // open() fails when there is nothing to show, for example when every screenshot failed.
+        if opened != Some(true) {
+            return;
+        }
 
         self.niri
             .cursor_manager
