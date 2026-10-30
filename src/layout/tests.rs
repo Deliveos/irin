@@ -4088,6 +4088,55 @@ fn active_column_with_focus_ring_on_screen_is_not_culled() {
     layout.verify_invariants();
 }
 
+#[test]
+fn view_gesture_to_another_column_forgets_prev_column_on_removal() {
+    let mut options = Options::default();
+    options.layout.gaps = 0.;
+
+    let mut ops = vec![Op::AddOutput(1)];
+    // Columns 1, 2, 4, each 400 px wide.
+    for id in [1, 2, 4] {
+        ops.extend([
+            Op::AddWindow {
+                params: TestWindowParams::new(id),
+            },
+            Op::SetColumnWidth(SizeChange::SetFixed(400)),
+            Op::Communicate(id),
+        ]);
+    }
+    ops.extend([
+        Op::FocusColumnFirst,
+        // Column 3 opens right of column 1, so closing it right away would focus column 1 again.
+        Op::AddWindow {
+            params: TestWindowParams::new(3),
+        },
+        Op::SetColumnWidth(SizeChange::SetFixed(400)),
+        Op::Communicate(3),
+        Op::CompleteAnimations,
+        // A mouse view drag that moves the focus to column 2.
+        Op::ViewOffsetGestureBegin {
+            output_idx: 1,
+            workspace_idx: None,
+            is_touchpad: false,
+        },
+        Op::ViewOffsetGestureUpdate {
+            delta: -200.,
+            timestamp: Duration::from_millis(0),
+            is_touchpad: false,
+        },
+        Op::ViewOffsetGestureEnd {
+            is_touchpad: Some(false),
+        },
+        Op::CompleteAnimations,
+    ]);
+    let mut layout = check_ops_with_options(options, ops);
+    assert_eq!(layout.focus().unwrap().0.id, 2);
+
+    // Closing column 2 focuses the column to its right, as after any other focus change.
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
+    assert_eq!(layout.focus().unwrap().0.id, 4);
+}
+
 fn parent_id_causes_loop(layout: &Layout<TestWindow>, id: usize, mut parent_id: usize) -> bool {
     if parent_id == id {
         return true;
