@@ -979,7 +979,7 @@ impl State {
                 return false;
             };
             let size = Size::<i32, BufferCoords>::from((mode.size.w, mode.size.h));
-            if s.session.current_constraints().map(|c| c.size) == Some(size) {
+            if s.constraints_size == Some(size) {
                 return true;
             }
 
@@ -1005,6 +1005,7 @@ impl State {
             if let Some(frame) = s.pending_frame.take() {
                 frame.fail(CaptureFailureReason::BufferConstraints);
             }
+            s.constraints_size = Some(constraints.size);
             s.session.update_constraints(constraints);
 
             true
@@ -6168,12 +6169,12 @@ impl Niri {
 
             // The constraints are kept up to date with the cursor image size in
             // refresh_image_copy_cursor_sessions, which also fails pending frames on change.
-            let Some(constraints) = s.session.current_constraints() else {
+            let Some(constraints_size) = s.constraints_size else {
                 let frame = s.pending_frame.take().unwrap();
                 frame.fail(CaptureFailureReason::BufferConstraints);
                 continue;
             };
-            let size = Size::<i32, Physical>::from((constraints.size.w, constraints.size.h));
+            let size = Size::<i32, Physical>::from((constraints_size.w, constraints_size.h));
 
             // Recreate the damage tracker if the cursor buffer size or output scale changed.
             let OutputModeSource::Static {
@@ -6201,7 +6202,7 @@ impl Niri {
             let buffer = frame.buffer();
             let capture_buffer = image_copy_capture_impl::capture_buffer(
                 &buffer,
-                constraints.size,
+                constraints_size,
                 wl_shm::Format::Argb8888,
             );
             if !matches!(capture_buffer, Some(CaptureBuffer::Shm)) {
@@ -6224,7 +6225,7 @@ impl Niri {
                 Ok(copy) => image_copy_capture_impl::finish_frame(
                     frame,
                     Transform::Normal,
-                    vec![Rectangle::from_size(constraints.size)],
+                    vec![Rectangle::from_size(constraints_size)],
                     target_presentation_time,
                     PendingCapture::Shm(copy),
                     renderer,
@@ -6340,19 +6341,17 @@ impl Niri {
             let scale = Scale::from(output.current_scale().fractional_scale());
 
             // Update the constraints if the cursor image size changed.
-            let constraints = image_copy_capture_impl::cursor_capture_constraints(self, &output);
-            let cursor_size = constraints.size;
-            let size_changed = s
-                .session
-                .current_constraints()
-                .is_none_or(|c| (c.size.w, c.size.h) != (constraints.size.w, constraints.size.h));
-            if size_changed {
+            let cursor_size = image_copy_capture_impl::cursor_capture_size(self, &output);
+            if s.constraints_size != Some(cursor_size) {
                 // Cannot capture a frame for outdated constraints, so fail it
                 // before sending the new constraints (otherwise clients which
                 // re-negotiate on failure may miss the new `done`).
                 if let Some(frame) = s.pending_frame.take() {
                     frame.fail(CaptureFailureReason::BufferConstraints);
                 }
+                s.constraints_size = Some(cursor_size);
+                let constraints =
+                    image_copy_capture_impl::cursor_capture_constraints_for_size(cursor_size);
                 s.session.update_constraints(constraints);
             }
 
