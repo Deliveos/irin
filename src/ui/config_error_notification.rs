@@ -97,7 +97,11 @@ impl ConfigErrorNotification {
         self.state = State::Hiding(self.animation(1., 0.));
     }
 
-    pub fn advance_animations(&mut self) {
+    /// Advances the animations.
+    ///
+    /// When the notification has just become fully shown, returns the time when it should start
+    /// hiding. Nothing moves until then, so the caller should make sure to redraw at that time.
+    pub fn advance_animations(&mut self) -> Option<Duration> {
         match &mut self.state {
             State::Hidden => (),
             State::Showing(anim) => {
@@ -110,7 +114,9 @@ impl ConfigErrorNotification {
                     } else {
                         Duration::from_secs(4)
                     };
-                    self.state = State::Shown(self.clock.now_unadjusted() + duration);
+                    let deadline = self.clock.now_unadjusted() + duration;
+                    self.state = State::Shown(deadline);
+                    return Some(deadline);
                 }
             }
             State::Shown(deadline) => {
@@ -124,10 +130,13 @@ impl ConfigErrorNotification {
                 }
             }
         }
+
+        None
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
-        !matches!(self.state, State::Hidden)
+        // While shown, the notification sits still until its deadline.
+        matches!(self.state, State::Showing(_) | State::Hiding(_))
     }
 
     pub fn render<R: NiriRenderer>(
@@ -255,4 +264,35 @@ pub fn error_text(markup: bool) -> String {
     };
 
     format!("Failed to parse the config file. Please run {command} to see the errors.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shown_notification_is_not_an_animation() {
+        let mut clock = Clock::with_time(Duration::ZERO);
+        let config = Rc::new(RefCell::new(Config::default()));
+        let mut notification = ConfigErrorNotification::new(clock.clone(), config);
+
+        notification.show();
+        assert!(notification.are_animations_ongoing());
+
+        // Long after the slide-in animation, the notification is shown for 4 seconds.
+        clock.set_unadjusted(Duration::from_secs(10));
+        let deadline = notification.advance_animations();
+        assert_eq!(deadline, Some(Duration::from_secs(14)));
+        assert!(!notification.are_animations_ongoing());
+
+        // The deadline is returned once.
+        clock.set_unadjusted(Duration::from_secs(12));
+        assert_eq!(notification.advance_animations(), None);
+        assert!(!notification.are_animations_ongoing());
+
+        // At the deadline, it starts hiding.
+        clock.set_unadjusted(Duration::from_secs(14));
+        assert_eq!(notification.advance_animations(), None);
+        assert!(notification.are_animations_ongoing());
+    }
 }

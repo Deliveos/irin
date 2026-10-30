@@ -4623,7 +4623,18 @@ impl Niri {
         let _span = tracy_client::span!("Niri::advance_animations");
 
         self.layout.advance_animations();
-        self.config_error_notification.advance_animations();
+        if let Some(deadline) = self.config_error_notification.advance_animations() {
+            // The notification doesn't count as an animation while it sits still, so redraw when
+            // it should start hiding.
+            let timer = Timer::from_duration(deadline.saturating_sub(get_monotonic_time()));
+            let res = self.event_loop.insert_source(timer, |_, _, state| {
+                state.niri.queue_redraw_all();
+                TimeoutAction::Drop
+            });
+            if let Err(err) = res {
+                warn!("error inserting the config notification timer: {err:?}");
+            }
+        }
         self.exit_confirm_dialog.advance_animations();
         self.window_mru_ui.advance_animations();
 
