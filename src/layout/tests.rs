@@ -417,6 +417,12 @@ enum Op {
     },
     RemoveOutput(#[proptest(strategy = "1..=5usize")] usize),
     FocusOutput(#[proptest(strategy = "1..=5usize")] usize),
+    SetOutputScale {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "arbitrary_scale()")]
+        scale: f64,
+    },
     UpdateOutputLayoutConfig {
         #[proptest(strategy = "1..=5usize")]
         id: usize,
@@ -843,6 +849,20 @@ impl Op {
                 };
 
                 layout.focus_output(&output);
+            }
+            Op::SetOutputScale { id, scale } => {
+                let name = format!("output{id}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+
+                output.change_current_state(
+                    None,
+                    None,
+                    Some(smithay::output::Scale::Fractional(scale)),
+                    None,
+                );
+                layout.update_output_size(&output);
             }
             Op::UpdateOutputLayoutConfig { id, layout_config } => {
                 let name = format!("output{id}");
@@ -1824,6 +1844,7 @@ fn operations_dont_panic() {
         Op::FocusOutput(0),
         Op::FocusOutput(1),
         Op::FocusOutput(2),
+        Op::SetOutputScale { id: 1, scale: 2. },
         Op::AddNamedWorkspace {
             ws_name: 1,
             output_names: vec![1],
@@ -1975,6 +1996,7 @@ fn operations_from_starting_state_dont_panic() {
         Op::FocusOutput(0),
         Op::FocusOutput(1),
         Op::FocusOutput(2),
+        Op::SetOutputScale { id: 1, scale: 2. },
         Op::AddNamedWorkspace {
             ws_name: 1,
             output_names: vec![1],
@@ -4316,6 +4338,80 @@ fn toggle_floating_after_moved_window_closed() {
     layout.toggle_window_floating(Some(&1));
     layout.set_window_floating(Some(&1), true);
     layout.verify_invariants();
+}
+
+#[test]
+fn interactive_move_tile_follows_output_scale_change() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 100.,
+            py: 100.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 0.,
+            dy: 600.,
+            output_idx: 1,
+            px: 100.,
+            py: 700.,
+        },
+        // Gaps of 37.3 round to 37 at scale 1 and to 37.5 at scale 2, so the dragged tile needs
+        // new options.
+        Op::SetOutputScale { id: 1, scale: 2. },
+    ];
+    let options = Options {
+        layout: niri_config::Layout {
+            gaps: 37.3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    check_ops_with_options(options, ops);
+}
+
+#[test]
+fn interactive_move_insert_hint_after_output_shrinks() {
+    let ops = [
+        Op::AddScaledOutput {
+            id: 1,
+            scale: 1.,
+            layout_config: None,
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 100.,
+            py: 100.,
+        },
+        // Near the bottom of the 1280×720 output.
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 0.,
+            dy: 600.,
+            output_idx: 1,
+            px: 100.,
+            py: 700.,
+        },
+    ];
+    let mut layout = check_ops(ops);
+    layout.update_render_elements(None);
+
+    // At scale 2 the view is 640×360, so the stored pointer position is below it, and the hint
+    // points at a workspace that is off screen.
+    check_ops_on_layout(&mut layout, [Op::SetOutputScale { id: 1, scale: 2. }]);
+    layout.update_render_elements(None);
 }
 
 proptest! {
