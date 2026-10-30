@@ -366,7 +366,6 @@ To see the upstream commits that nori doesn't have yet, run `git fetch https://g
 Open issues in nori's own changes:
 
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
-- [#124](https://github.com/Deliveos/nori/issues/124): unused import warning in builds without D-Bus ([#125](https://github.com/Deliveos/nori/pull/125)).
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
 Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#24](https://github.com/Deliveos/nori/issues/24) (the rest of it), [#119](https://github.com/Deliveos/nori/issues/119), [#128](https://github.com/Deliveos/nori/issues/128) (smithay).
