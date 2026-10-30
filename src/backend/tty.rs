@@ -1757,6 +1757,14 @@ impl Tty {
                     "unexpected redraw state for output {name} (should be WaitingForVBlank); \
                      can happen when resuming from sleep or powering on monitors: {state:?}"
                 );
+
+                // The estimated vblank timer would fire later in a state it doesn't expect.
+                if let RedrawState::WaitingForEstimatedVBlank(token)
+                | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = state
+                {
+                    niri.event_loop.remove(token);
+                }
+
                 true
             }
         };
@@ -1834,19 +1842,29 @@ impl Tty {
             return;
         };
 
+        let queued = match mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
+            RedrawState::WaitingForEstimatedVBlank(_) => false,
+            // The timer fired just in front of a redraw.
+            RedrawState::WaitingForEstimatedVBlankAndQueued(_) => true,
+            // Every path that leaves the waiting states removes this timer, so this shouldn't
+            // happen, but it's not worth crashing the session over.
+            state @ (RedrawState::Idle
+            | RedrawState::Queued
+            | RedrawState::WaitingForVBlank { .. }) => {
+                error!(
+                    "estimated vblank timer fired in unexpected redraw state for {name}: {state:?}"
+                );
+                output_state.redraw_state = state;
+                return;
+            }
+        };
+
         // We waited for the timer, now we can send frame callbacks again.
         output_state.frame_callback_sequence = output_state.frame_callback_sequence.wrapping_add(1);
 
-        match mem::replace(&mut output_state.redraw_state, RedrawState::Idle) {
-            RedrawState::Idle => unreachable!(),
-            RedrawState::Queued => unreachable!(),
-            RedrawState::WaitingForVBlank { .. } => unreachable!(),
-            RedrawState::WaitingForEstimatedVBlank(_) => (),
-            // The timer fired just in front of a redraw.
-            RedrawState::WaitingForEstimatedVBlankAndQueued(_) => {
-                output_state.redraw_state = RedrawState::Queued;
-                return;
-            }
+        if queued {
+            output_state.redraw_state = RedrawState::Queued;
+            return;
         }
 
         if output_state.unfinished_animations_remain {

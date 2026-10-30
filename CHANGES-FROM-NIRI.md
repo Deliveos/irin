@@ -83,6 +83,10 @@ A crash of the compositor ends the whole session.
 - **`stop-cast` without the ScreenCast D-Bus service.**
     `msg action stop-cast --session-id N` crashes a niri instance that runs without the ScreenCast D-Bus interface (for example one started without `--session`), even when no cast matches.
     nori returns early in that case ([e09676aa](https://github.com/Deliveos/nori/commit/e09676aa4273f2163a49fe81101551c01031bad6); fixes [#13](https://github.com/Deliveos/nori/issues/13)).
+- **Unexpected vblank events.**
+    niri logs a vblank that arrives in an unexpected redraw state ("can happen when resuming from sleep or powering on monitors"), but if an estimated-vblank timer was pending at that moment, it stays registered, and when it, or a timer registered after it, fires in the wrong state, it hits an `unreachable!()` and takes the session down.
+    nori removes that timer, and the timer logs an error and keeps the current state instead of panicking if it ever fires in a state it doesn't expect.
+    There is no test, because the tests run on the headless backend and this is TTY code ([#201](https://github.com/Deliveos/nori/pull/201); fixes [#147](https://github.com/Deliveos/nori/issues/147)).
 - **Empty hotkey overlay.**
     With `hotkey-overlay { hide-not-bound }` and none of the listed actions bound, niri crashes at startup, because the overlay is shown at startup by default.
     nori draws nothing in that case ([0d82a4c5](https://github.com/Deliveos/nori/commit/0d82a4c560a8a4db81193165309f3ad21d558283); fixes [#12](https://github.com/Deliveos/nori/issues/12)).
