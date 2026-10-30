@@ -193,6 +193,10 @@ The spawn fix is about a background thread that never finished.
 - **Resize animation flash.**
     niri takes the starting snapshot of a resize animation on the commit that acknowledges the resize, and Firefox has already committed its content at the new size by then, so maximizing or restoring Firefox flashes.
     nori takes the snapshot of a window on screen when the resize is sent to it; off-screen windows, or a scale change before the window answers, fall back to niri's behavior, and with resize animations off nori skips this early snapshot (the snapshot on commit is still taken, as in niri) ([#111](https://github.com/Deliveos/nori/pull/111); fixes [#110](https://github.com/Deliveos/nori/issues/110)).
+- **NaN and infinite column widths.**
+    niri's `set-column-width` and `set-window-height` binds accept `nan%` and `inf%`, since Rust's float parser does, and a config proportion too large for a float, like `proportion 1e999`, becomes infinity.
+    A NaN column width asks the window for a width of 2147483647 px and stays NaN after relative changes like `+10%`; an infinite default column width asks for the same width, because the default column width skips the limit of 10000 on proportions that `set-column-width` applies.
+    nori rejects these values when it parses the config or a size change, and applies the limit to the default column width ([#211](https://github.com/Deliveos/nori/pull/211); fixes [#175](https://github.com/Deliveos/nori/issues/175)).
 - **Cursor shape after resize and view-drag grabs.**
     In niri, the resize grab resets the cursor shape without queueing a redraw, and the spatial movement grab redraws only the output the gesture ran on, so an output that nothing else redraws (for example with the cursor over empty space on another output) keeps the resize or drag shape until its next redraw.
     nori redraws the outputs that show the cursor when the grab ends ([#65](https://github.com/Deliveos/nori/pull/65); fixes [#45](https://github.com/Deliveos/nori/issues/45)).

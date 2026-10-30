@@ -133,10 +133,41 @@ pub struct LayoutPart {
     pub fullscreen_backdrop_color: Option<Color>,
 }
 
-#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PresetSize {
+    Proportion(f64),
+    Fixed(i32),
+}
+
+// Decoded through this, so that PresetSize can reject a proportion that isn't finite.
+#[derive(knuffel::Decode)]
+enum PresetSizeNode {
     Proportion(#[knuffel(argument)] f64),
     Fixed(#[knuffel(argument)] i32),
+}
+
+impl<S> knuffel::Decode<S> for PresetSize
+where
+    S: knuffel::traits::ErrorSpan,
+{
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        match PresetSizeNode::decode_node(node, ctx)? {
+            PresetSizeNode::Proportion(prop) => {
+                // A KDL number too large for f64, like 1e999, parses as infinity.
+                if !prop.is_finite() {
+                    ctx.emit_error(DecodeError::conversion(
+                        node,
+                        "proportion must be a finite number",
+                    ));
+                }
+                Ok(Self::Proportion(prop))
+            }
+            PresetSizeNode::Fixed(fixed) => Ok(Self::Fixed(fixed)),
+        }
+    }
 }
 
 impl From<PresetSize> for SizeChange {

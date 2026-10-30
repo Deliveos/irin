@@ -824,6 +824,68 @@ mod tests {
     }
 
     #[test]
+    fn parse_non_finite_sizes() {
+        // f64::from_str accepts NaN and infinity, and a KDL number too large for f64 parses as
+        // infinity, but they aren't usable sizes.
+        assert_parse_error(
+            r#"
+            binds {
+                Mod+R { set-column-width "nan%"; }
+            }
+            "#,
+            "value must be a finite number",
+        );
+        assert_parse_error(
+            r#"
+            binds {
+                Mod+R { set-window-height "+inf%"; }
+            }
+            "#,
+            "value must be a finite number",
+        );
+        assert_parse_error(
+            r#"
+            layout {
+                default-column-width { proportion 1e999; }
+            }
+            "#,
+            "proportion must be a finite number",
+        );
+        assert_parse_error(
+            r#"
+            layout {
+                preset-column-widths {
+                    proportion 0.5
+                    proportion -1e999
+                }
+            }
+            "#,
+            "proportion must be a finite number",
+        );
+        assert_parse_error(
+            r#"
+            window-rule {
+                default-window-height { proportion 1e999; }
+            }
+            "#,
+            "proportion must be a finite number",
+        );
+
+        // Finite proportions still parse.
+        let config = do_parse(
+            r#"
+            layout {
+                default-column-width { proportion 0.25; }
+            }
+            "#,
+        );
+        assert_eq!(
+            config.layout.default_column_width,
+            Some(PresetSize::Proportion(0.25))
+        );
+    }
+
+    #[test]
     fn parse_bind_bound_action() {
         let config = do_parse(
             r#"

@@ -1818,11 +1818,11 @@ impl FromStr for SizeChange {
 
                 match value.bytes().next() {
                     Some(b'-' | b'+') => {
-                        let value = value.parse().map_err(|_| "error parsing value")?;
+                        let value = parse_finite(value)?;
                         Ok(Self::AdjustProportion(value))
                     }
                     Some(_) => {
-                        let value = value.parse().map_err(|_| "error parsing value")?;
+                        let value = parse_finite(value)?;
                         Ok(Self::SetProportion(value))
                     }
                     None => Err("value is missing"),
@@ -1844,6 +1844,15 @@ impl FromStr for SizeChange {
             }
         }
     }
+}
+
+/// Parses a float, rejecting NaN and infinity, which `f64::from_str` accepts.
+fn parse_finite(value: &str) -> Result<f64, &'static str> {
+    let value: f64 = value.parse().map_err(|_| "error parsing value")?;
+    if !value.is_finite() {
+        return Err("value must be a finite number");
+    }
+    Ok(value)
 }
 
 impl FromStr for PositionChange {
@@ -2172,6 +2181,14 @@ mod tests {
 
         assert!("-".parse::<SizeChange>().is_err());
         assert!("10% ".parse::<SizeChange>().is_err());
+
+        // f64::from_str accepts these, but they aren't usable sizes.
+        assert!("nan%".parse::<SizeChange>().is_err());
+        assert!("NaN%".parse::<SizeChange>().is_err());
+        assert!("-nan%".parse::<SizeChange>().is_err());
+        assert!("inf%".parse::<SizeChange>().is_err());
+        assert!("+infinity%".parse::<SizeChange>().is_err());
+        assert!("1e999%".parse::<SizeChange>().is_err());
     }
 
     #[test]
