@@ -90,6 +90,9 @@ A crash of the compositor ends the whole session.
     A client that never reads piles up threads (200 requests left 200 threads in the issue's test), and when starting a thread fails, niri panics.
     nori allows at most 16 such transfers at once, drops further requests with the warning "too many pending selection writes, dropping request", and logs a failed thread start instead of panicking.
     The limit is global, so while one client holds 16 unread transfers, pastes of nori's own clipboard data fail for all clients (the request is dropped and the client reads nothing) until that client reads or closes them ([44a1124e](https://github.com/Deliveos/nori/commit/44a1124e8b3ed61087ffe4ffc20e99537236126f); fixes [#9](https://github.com/Deliveos/nori/issues/9)).
+- **Tablet mapped to a window that is barely visible.**
+    With `map-to-focused-window`, niri clamps the tablet position to the visible part of the focused window minus one pixel, and `f64::clamp()` panics when that part is narrower or shorter than one pixel.
+    nori clamps to 0 in that case, and maps the tablet as if no window were focused when that part has a width or height of 0 (dividing by it would give a NaN position); the clamping has a unit test in `src/input/mod.rs` ([#205](https://github.com/Deliveos/nori/pull/205); fixes [#151](https://github.com/Deliveos/nori/issues/151)).
 - **`stop-cast` without the ScreenCast D-Bus service.**
     `msg action stop-cast --session-id N` crashes a niri instance that runs without the ScreenCast D-Bus interface (for example one started without `--session`), even when no cast matches.
     nori returns early in that case ([e09676aa](https://github.com/Deliveos/nori/commit/e09676aa4273f2163a49fe81101551c01031bad6); fixes [#13](https://github.com/Deliveos/nori/issues/13)).
