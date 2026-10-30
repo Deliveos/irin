@@ -3449,7 +3449,14 @@ impl<W: LayoutElement> Layout<W> {
             let ws = current.active_workspace();
 
             if ws.floating_is_active() {
-                self.move_to_output(None, output, None, ActivateWindow::Smart);
+                let target_ws_idx =
+                    target_ws_idx.map(|idx| idx.min(monitors[new_idx].workspaces.len() - 1));
+                let activate = if activate {
+                    ActivateWindow::Smart
+                } else {
+                    ActivateWindow::No
+                };
+                self.move_to_output(None, output, target_ws_idx, activate);
                 return;
             }
 

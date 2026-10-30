@@ -189,6 +189,9 @@ The spawn fix is about a background thread that never finished.
 - **Per-workspace `default-column-display`.**
     In niri, a new window gets its column display mode from the monitor's first workspace, so `default-column-display` in a named workspace's `layout {}` block works only when that workspace is the monitor's first one, and then applies to new windows on all of the monitor's workspaces.
     nori applies the target workspace's options before creating the column ([a31350cd](https://github.com/Deliveos/nori/commit/a31350cd6c77d3f3789a723a99f210684e4bcb6f); fixes [#22](https://github.com/Deliveos/nori/issues/22)).
+- **`move-column-to-workspace` to another monitor with a floating window.**
+    When the focused window is floating and the referenced workspace is on another monitor, niri moves the window to that monitor's active workspace instead of the referenced one, and focuses it even with `--focus false`.
+    nori moves it to the referenced workspace and follows `--focus`, like it does on the same monitor ([#210](https://github.com/Deliveos/nori/pull/210); fixes [#173](https://github.com/Deliveos/nori/issues/173)).
 - **Popups above or left of their window.**
     niri computes the output overlap of popups from the window's top-left corner, so a popup entirely above or left of its window (a tooltip above it, a menu opening upward) never gets `wl_surface.enter` and can be drawn at the wrong scale.
     nori uses an overlap area centered on the window ([#92](https://github.com/Deliveos/nori/pull/92); fixes [#72](https://github.com/Deliveos/nori/issues/72)).
