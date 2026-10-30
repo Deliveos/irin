@@ -444,6 +444,9 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
 - **Screenshot UI and screen transitions.**
     niri renders every output three times, once per render target, when the screenshot UI opens or a screen transition starts.
     Without `block-out-from` rules the three are identical, so nori renders each output once and shares the texture ([#67](https://github.com/Deliveos/nori/pull/67); fixes [#35](https://github.com/Deliveos/nori/issues/35)).
+- **Gamma blobs of unplugged outputs.**
+    niri creates a DRM property blob for each gamma ramp (`GAMMA_LUT`, or `CTM` as a fallback) and destroys the previous one when it sets a new one, but not the last one when the output is unplugged, so each unplug with a ramp set (for example while a night-light tool runs) leaks one blob in the kernel until niri exits, `gamma_lut_size` × 8 bytes for `GAMMA_LUT`.
+    nori destroys it when the output is disconnected ([#228](https://github.com/Deliveos/nori/pull/228); fixes [#162](https://github.com/Deliveos/nori/issues/162)).
 - **Layer surfaces of unplugged outputs.**
     niri keeps an entry for each layer surface (bar, wallpaper) of an output that is removed, one more on each unplug.
     nori removes them with the output ([0280b8b2](https://github.com/Deliveos/nori/commit/0280b8b2f20e84788b614db46d6face684804b44); fixes [#18](https://github.com/Deliveos/nori/issues/18)).

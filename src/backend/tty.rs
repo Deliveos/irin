@@ -1606,7 +1606,7 @@ impl Tty {
             return;
         };
 
-        let Some(surface) = device.surfaces.remove(&crtc) else {
+        let Some(mut surface) = device.surfaces.remove(&crtc) else {
             debug!("disconnecting connector for crtc: {crtc:?}");
 
             if let Some((conn, _)) = device
@@ -1630,6 +1630,10 @@ impl Tty {
         };
 
         debug!("disconnecting connector: {:?}", surface.name.connector);
+
+        if let Some(gamma_props) = &mut surface.gamma_props {
+            gamma_props.destroy_blob(&device.drm);
+        }
 
         let output = niri
             .global_space
@@ -2918,6 +2922,22 @@ impl GammaProps {
         }
 
         Ok(())
+    }
+
+    /// Destroys the property blob that was set last, if any.
+    ///
+    /// A property blob lives until it's destroyed or the DRM fd is closed, so this needs to run
+    /// when the output goes away. The CRTC state keeps its own reference while it uses the blob.
+    fn destroy_blob(&mut self, device: &DrmDevice) {
+        if let GammaMode::Lut { previous_blob, .. } | GammaMode::Ctm { previous_blob, .. } =
+            &mut self.mode
+        {
+            if let Some(blob) = previous_blob.take() {
+                if let Err(err) = device.destroy_property_blob(blob.get()) {
+                    warn!("error destroying gamma property blob: {err:?}");
+                }
+            }
+        }
     }
 }
 
