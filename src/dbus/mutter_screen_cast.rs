@@ -185,8 +185,12 @@ impl Session {
         }
     }
 
+    // Takes &self, so that zbus calls it with the interface lock held only for reading. With
+    // &mut self, the write lock held while server.at() below waits for the object server's lock
+    // deadlocks with anything that holds the object server's lock while it waits for this
+    // interface's lock, like Niri::stop_cast() or a D-Bus Introspect call.
     async fn record_monitor(
-        &mut self,
+        &self,
         #[zbus(object_server)] server: &ObjectServer,
         connector: &str,
         properties: RecordMonitorProperties,
@@ -222,7 +226,7 @@ impl Session {
         match server.at(&path, stream.clone()).await {
             Ok(true) => {
                 let iface = server.interface(&path).await.unwrap();
-                self.streams.lock().unwrap().push((stream, iface));
+                self.add_stream(server, stream, iface).await?;
             }
             Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
             Err(err) => {
@@ -235,8 +239,9 @@ impl Session {
         Ok(path)
     }
 
+    // Takes &self for the same reason as record_monitor().
     async fn record_window(
-        &mut self,
+        &self,
         #[zbus(object_server)] server: &ObjectServer,
         properties: RecordWindowProperties,
     ) -> fdo::Result<OwnedObjectPath> {
@@ -261,7 +266,7 @@ impl Session {
         match server.at(&path, stream.clone()).await {
             Ok(true) => {
                 let iface = server.interface(&path).await.unwrap();
-                self.streams.lock().unwrap().push((stream, iface));
+                self.add_stream(server, stream, iface).await?;
             }
             Ok(false) => return Err(fdo::Error::Failed("stream path already exists".to_owned())),
             Err(err) => {
@@ -342,6 +347,33 @@ impl Session {
             stopped: Arc::new(AtomicBool::new(false)),
         }
     }
+
+    /// Adds a stream that was just put on the object server, unless the session has stopped.
+    async fn add_stream(
+        &self,
+        server: &ObjectServer,
+        stream: Stream,
+        iface: InterfaceRef<Stream>,
+    ) -> fdo::Result<()> {
+        {
+            let mut streams = self.streams.lock().unwrap();
+            // stop() can run at the same time. It sets `stopped` before it takes the streams, so
+            // checking `stopped` under the lock means that either stop() removes this stream or
+            // this method does.
+            if !self.stopped.load(Ordering::SeqCst) {
+                streams.push((stream, iface));
+                return Ok(());
+            }
+        }
+
+        if let Err(err) = server
+            .remove::<Stream, _>(iface.signal_emitter().path())
+            .await
+        {
+            warn!("error removing Stream: {err:?}");
+        }
+        Err(fdo::Error::Failed("session is stopped".to_owned()))
+    }
 }
 
 impl Drop for Session {
@@ -397,5 +429,124 @@ impl StreamTarget {
             },
             StreamTarget::Window { id } => StreamTargetId::Window { id: *id },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use zbus::blocking::connection::Builder;
+    use zbus::Guid;
+
+    use super::*;
+    use crate::backend::OutputId;
+
+    const SESSION_PATH: &str = "/org/gnome/Mutter/ScreenCast/Session/u1";
+
+    #[test]
+    fn session_stops_while_record_monitor_runs() {
+        let output = niri_ipc::Output {
+            name: String::from("DP-1"),
+            make: String::from("Make"),
+            model: String::from("Model"),
+            serial: None,
+            physical_size: None,
+            modes: vec![],
+            current_mode: None,
+            is_custom_mode: false,
+            vrr_supported: false,
+            vrr_enabled: false,
+            logical: Some(niri_ipc::LogicalOutput {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.,
+                transform: niri_ipc::Transform::Normal,
+            }),
+            max_bpc: None,
+        };
+        let ipc_outputs = Arc::new(Mutex::new(HashMap::from([(OutputId::next(), output)])));
+        let (to_niri, _from_session) = calloop::channel::channel();
+        let session = Session::new(CastSessionId::next(), ipc_outputs.clone(), to_niri);
+
+        // A peer-to-peer D-Bus connection with the session on the server side.
+        let (server_socket, client_socket) = UnixStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            Builder::async_io_unix_stream(server_socket)
+                .server(Guid::generate())
+                .unwrap()
+                .p2p()
+                .build()
+                .unwrap()
+        });
+        let client = Builder::async_io_unix_stream(client_socket)
+            .p2p()
+            .build()
+            .unwrap();
+        let server = server.join().unwrap();
+        server.object_server().at(SESSION_PATH, session).unwrap();
+
+        // Keep RecordMonitor waiting inside the method, where zbus holds the session's interface
+        // lock.
+        let outputs_guard = ipc_outputs.lock().unwrap();
+        let record = {
+            let client = client.clone();
+            thread::spawn(move || {
+                let properties = HashMap::<&str, Value>::new();
+                client.call_method(
+                    None::<&str>,
+                    SESSION_PATH,
+                    Some("org.gnome.Mutter.ScreenCast.Session"),
+                    "RecordMonitor",
+                    &("DP-1", properties),
+                )
+            })
+        };
+        thread::sleep(Duration::from_millis(100));
+
+        // Stop the session like Niri::stop_cast() does. It used to wait for the session's
+        // interface lock while holding the object server's lock, which RecordMonitor then waited
+        // for.
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        {
+            let server = server.clone();
+            thread::spawn(move || {
+                let server = server.object_server();
+                let iface = server.interface::<_, Session>(SESSION_PATH).unwrap();
+                async_io::block_on(async move {
+                    iface
+                        .get()
+                        .stop(server.inner(), iface.signal_emitter().clone())
+                        .await
+                });
+                stopped_tx.send(()).unwrap();
+            });
+        }
+        stopped_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stopping the session should finish while RecordMonitor runs");
+        drop(outputs_guard);
+
+        // The session stopped before RecordMonitor added its stream, so RecordMonitor fails and
+        // removes the stream.
+        let reply = record.join().unwrap();
+        assert!(reply.is_err(), "{reply:?}");
+
+        let reply = client
+            .call_method(
+                None::<&str>,
+                "/",
+                Some("org.freedesktop.DBus.Introspectable"),
+                "Introspect",
+                &(),
+            )
+            .unwrap();
+        let xml: String = reply.body().deserialize().unwrap();
+        assert!(!xml.contains("<node name=\"u"), "{xml}");
     }
 }
