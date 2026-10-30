@@ -474,13 +474,18 @@ mod tests {
         let (to_niri, _from_session) = calloop::channel::channel();
         let session = Session::new(CastSessionId::next(), ipc_outputs.clone(), to_niri);
 
-        // A peer-to-peer D-Bus connection with the session on the server side.
+        // A peer-to-peer D-Bus connection with the session on the server side. The builder serves
+        // the session so that build() returns only once the object server receives method calls.
+        // object_server().at() would start receiving them in the background, and the server drops
+        // a method call that arrives before that, so RecordMonitor would never get a reply.
         let (server_socket, client_socket) = UnixStream::pair().unwrap();
         let server = thread::spawn(move || {
             Builder::async_io_unix_stream(server_socket)
                 .server(Guid::generate())
                 .unwrap()
                 .p2p()
+                .serve_at(SESSION_PATH, session)
+                .unwrap()
                 .build()
                 .unwrap()
         });
@@ -489,7 +494,6 @@ mod tests {
             .build()
             .unwrap();
         let server = server.join().unwrap();
-        server.object_server().at(SESSION_PATH, session).unwrap();
 
         // Keep RecordMonitor waiting inside the method, where zbus holds the session's interface
         // lock.
