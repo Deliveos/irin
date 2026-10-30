@@ -40,13 +40,14 @@ use tracing::field::Empty;
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
-use crate::layout::ActivateWindow;
+use crate::layout::workspace::Workspace;
+use crate::layout::{ActivateWindow, Layout};
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
 use crate::utils::{
     get_monotonic_time, output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge,
 };
-use crate::window::{InitialConfigureState, ResolvedWindowRules, Unmapped, WindowRef};
+use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
 
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -512,40 +513,17 @@ impl XdgShellHandler for State {
                 InitialConfigureState::Configured {
                     rules,
                     output,
+                    workspace_name,
                     is_pending_maximized,
                     ..
                 } => {
-                    // Figure out the monitor following a similar logic to initial configure.
-                    // FIXME: deduplicate.
-                    let mon = output
-                        .as_ref()
-                        .and_then(|o| self.niri.layout.monitor_for_output(o))
-                        .map(|mon| (mon, false))
-                        // If not, check if we have a parent with a monitor.
-                        .or_else(|| {
-                            toplevel
-                                .parent()
-                                .and_then(|parent| self.niri.layout.find_window_and_output(&parent))
-                                .and_then(|(_win, output)| output)
-                                .and_then(|o| self.niri.layout.monitor_for_output(o))
-                                .map(|mon| (mon, true))
-                        })
-                        // If not, fall back to the active monitor.
-                        .or_else(|| {
-                            self.niri
-                                .layout
-                                .active_monitor_ref()
-                                .map(|mon| (mon, false))
-                        });
-
-                    *output = mon
-                        .filter(|(_, parent)| !parent)
-                        .map(|(mon, _)| mon.output().clone());
-                    let mon = mon.map(|(mon, _)| mon);
-
-                    let ws = mon
-                        .map(|mon| mon.active_workspace_ref())
-                        .or_else(|| self.niri.layout.active_workspace());
+                    let ws = configured_window_workspace(
+                        &self.niri.layout,
+                        &toplevel,
+                        workspace_name.as_deref(),
+                        None,
+                        output,
+                    );
 
                     if let Some(ws) = ws {
                         // If the window is pending fullscreen, then this will do nothing. But
@@ -602,50 +580,13 @@ impl XdgShellHandler for State {
                     workspace_name,
                     is_pending_maximized,
                 } => {
-                    // Figure out the monitor following a similar logic to initial configure.
-                    // FIXME: deduplicate.
-                    let mon = workspace_name
-                        .as_deref()
-                        .and_then(|name| self.niri.layout.monitor_for_workspace(name))
-                        .map(|mon| (mon, false));
-
-                    let mon = mon.or_else(|| {
-                        output
-                            .as_ref()
-                            .and_then(|o| self.niri.layout.monitor_for_output(o))
-                            .map(|mon| (mon, false))
-                            // If not, check if we have a parent with a monitor.
-                            .or_else(|| {
-                                toplevel
-                                    .parent()
-                                    .and_then(|parent| {
-                                        self.niri.layout.find_window_and_output(&parent)
-                                    })
-                                    .and_then(|(_win, output)| output)
-                                    .and_then(|o| self.niri.layout.monitor_for_output(o))
-                                    .map(|mon| (mon, true))
-                            })
-                            // If not, fall back to the active monitor.
-                            .or_else(|| {
-                                self.niri
-                                    .layout
-                                    .active_monitor_ref()
-                                    .map(|mon| (mon, false))
-                            })
-                    });
-
-                    *output = mon
-                        .filter(|(_, parent)| !parent)
-                        .map(|(mon, _)| mon.output().clone());
-                    let mon = mon.map(|(mon, _)| mon);
-
-                    let ws = workspace_name
-                        .as_deref()
-                        .and_then(|name| mon.map(|mon| mon.find_named_workspace(name)))
-                        .unwrap_or_else(|| {
-                            mon.map(|mon| mon.active_workspace_ref())
-                                .or_else(|| self.niri.layout.active_workspace())
-                        });
+                    let ws = configured_window_workspace(
+                        &self.niri.layout,
+                        &toplevel,
+                        workspace_name.as_deref(),
+                        None,
+                        output,
+                    );
 
                     if let Some(ws) = ws {
                         // If the window is pending fullscreen, then this will do nothing since
@@ -728,40 +669,19 @@ impl XdgShellHandler for State {
 
                     // The required configure will be the initial configure.
                 }
-                InitialConfigureState::Configured { rules, output, .. } => {
-                    // Figure out the monitor following a similar logic to initial configure.
-                    // FIXME: deduplicate.
-                    let mon = requested_output
-                        .as_ref()
-                        // If none requested, try currently configured output.
-                        .or(output.as_ref())
-                        .and_then(|o| self.niri.layout.monitor_for_output(o))
-                        .map(|mon| (mon, false))
-                        // If not, check if we have a parent with a monitor.
-                        .or_else(|| {
-                            toplevel
-                                .parent()
-                                .and_then(|parent| self.niri.layout.find_window_and_output(&parent))
-                                .and_then(|(_win, output)| output)
-                                .and_then(|o| self.niri.layout.monitor_for_output(o))
-                                .map(|mon| (mon, true))
-                        })
-                        // If not, fall back to the active monitor.
-                        .or_else(|| {
-                            self.niri
-                                .layout
-                                .active_monitor_ref()
-                                .map(|mon| (mon, false))
-                        });
-
-                    *output = mon
-                        .filter(|(_, parent)| !parent)
-                        .map(|(mon, _)| mon.output().clone());
-                    let mon = mon.map(|(mon, _)| mon);
-
-                    let ws = mon
-                        .map(|mon| mon.active_workspace_ref())
-                        .or_else(|| self.niri.layout.active_workspace());
+                InitialConfigureState::Configured {
+                    rules,
+                    output,
+                    workspace_name,
+                    ..
+                } => {
+                    let ws = configured_window_workspace(
+                        &self.niri.layout,
+                        &toplevel,
+                        workspace_name.as_deref(),
+                        requested_output.as_ref(),
+                        output,
+                    );
 
                     if let Some(ws) = ws {
                         toplevel.with_pending_state(|state| {
@@ -813,50 +733,13 @@ impl XdgShellHandler for State {
                     workspace_name,
                     is_pending_maximized,
                 } => {
-                    // Figure out the monitor following a similar logic to initial configure.
-                    // FIXME: deduplicate.
-                    let mon = workspace_name
-                        .as_deref()
-                        .and_then(|name| self.niri.layout.monitor_for_workspace(name))
-                        .map(|mon| (mon, false));
-
-                    let mon = mon.or_else(|| {
-                        output
-                            .as_ref()
-                            .and_then(|o| self.niri.layout.monitor_for_output(o))
-                            .map(|mon| (mon, false))
-                            // If not, check if we have a parent with a monitor.
-                            .or_else(|| {
-                                toplevel
-                                    .parent()
-                                    .and_then(|parent| {
-                                        self.niri.layout.find_window_and_output(&parent)
-                                    })
-                                    .and_then(|(_win, output)| output)
-                                    .and_then(|o| self.niri.layout.monitor_for_output(o))
-                                    .map(|mon| (mon, true))
-                            })
-                            // If not, fall back to the active monitor.
-                            .or_else(|| {
-                                self.niri
-                                    .layout
-                                    .active_monitor_ref()
-                                    .map(|mon| (mon, false))
-                            })
-                    });
-
-                    *output = mon
-                        .filter(|(_, parent)| !parent)
-                        .map(|(mon, _)| mon.output().clone());
-                    let mon = mon.map(|(mon, _)| mon);
-
-                    let ws = workspace_name
-                        .as_deref()
-                        .and_then(|name| mon.map(|mon| mon.find_named_workspace(name)))
-                        .unwrap_or_else(|| {
-                            mon.map(|mon| mon.active_workspace_ref())
-                                .or_else(|| self.niri.layout.active_workspace())
-                        });
+                    let ws = configured_window_workspace(
+                        &self.niri.layout,
+                        &toplevel,
+                        workspace_name.as_deref(),
+                        None,
+                        output,
+                    );
 
                     if let Some(ws) = ws {
                         toplevel.with_pending_state(|state| {
@@ -1527,6 +1410,71 @@ impl State {
             }
         }
     }
+}
+
+/// Picks the workspace to configure a window for after its initial configure, before it maps.
+///
+/// Follows the map's choice of output, with one exception kept from before: the output of a
+/// fullscreen request comes first, while the map prefers the named workspace (#255). Then come the
+/// parent's output if the window will open next to its parent, the named workspace that the window
+/// was configured for, the configured output and the active monitor. When the window will open
+/// next to its parent, it is configured for the named or the active workspace of the parent's
+/// monitor, as before, not for the parent's own workspace, where the map puts it.
+///
+/// Stores the picked monitor's output in `output` for the output of a fullscreen request and for
+/// the active monitor, as before. Otherwise keeps the configured output (`None` if it is gone), so
+/// that the request doesn't change whether the map opens the window next to its parent.
+fn configured_window_workspace<'a>(
+    layout: &'a Layout<Mapped>,
+    toplevel: &ToplevelSurface,
+    workspace_name: Option<&str>,
+    requested_output: Option<&Output>,
+    output: &mut Option<Output>,
+) -> Option<&'a Workspace<Mapped>> {
+    // Like the map, ignore a configured output that is gone.
+    let configured = output
+        .take()
+        .filter(|o| layout.monitor_for_output(o).is_some());
+
+    // The bool says whether to store the picked monitor's output.
+    let mon = requested_output
+        .and_then(|o| layout.monitor_for_output(o))
+        .map(|mon| (mon, true))
+        // If not, check if the window will open next to its parent, which the map does when the
+        // window follows its parent (no configured output) or was configured for its output.
+        .or_else(|| {
+            toplevel
+                .parent()
+                .and_then(|parent| layout.find_window_and_output(&parent))
+                .and_then(|(_win, parent_output)| parent_output)
+                .filter(|parent_output| configured.as_ref().is_none_or(|o| o == *parent_output))
+                .and_then(|o| layout.monitor_for_output(o))
+                .map(|mon| (mon, false))
+        })
+        .or_else(|| {
+            workspace_name
+                .and_then(|name| layout.monitor_for_workspace(name))
+                .map(|mon| (mon, false))
+        })
+        .or_else(|| {
+            configured
+                .as_ref()
+                .and_then(|o| layout.monitor_for_output(o))
+                .map(|mon| (mon, false))
+        })
+        // If not, fall back to the active monitor.
+        .or_else(|| layout.active_monitor_ref().map(|mon| (mon, true)));
+
+    *output = match mon {
+        Some((mon, true)) => Some(mon.output().clone()),
+        _ => configured,
+    };
+    let mon = mon.map(|(mon, _)| mon);
+
+    workspace_name
+        .and_then(|name| mon?.find_named_workspace(name))
+        .or_else(|| mon.map(|mon| mon.active_workspace_ref()))
+        .or_else(|| layout.active_workspace())
 }
 
 fn unconstrain_with_padding(
