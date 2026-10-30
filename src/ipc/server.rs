@@ -35,6 +35,7 @@ use crate::handlers::image_copy_capture;
 use crate::input::pick_window_grab::PickWindowGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::niri::State;
+use crate::utils::listening_socket::{insert_listening_socket, OnAcceptError};
 use crate::utils::{version, with_toplevel_role};
 use crate::window::Mapped;
 
@@ -133,8 +134,12 @@ impl IpcServer {
                 .context("error setting socket to non-blocking")?;
 
             let source = Generic::new(listener, Interest::READ, Mode::Level);
-            event_loop
-                .insert_source(source, |_, socket, state| {
+            insert_listening_socket(
+                event_loop,
+                String::from("the IPC socket"),
+                OnAcceptError::Pause,
+                source,
+                |_, socket, state| {
                     match socket.accept() {
                         Ok((stream, _)) => on_new_ipc_client(state, stream),
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => (),
@@ -142,8 +147,10 @@ impl IpcServer {
                     }
 
                     Ok(PostAction::Continue)
-                })
-                .unwrap();
+                },
+            )
+            .map_err(|err| err.error)
+            .context("error adding the IPC socket to the event loop")?;
 
             Some(socket_path)
         } else {

@@ -42,6 +42,7 @@ use crate::handlers::KdeDecorationsModeState;
 use crate::niri::ClientState;
 
 pub mod id;
+pub mod listening_socket;
 pub mod region;
 pub mod scale;
 pub mod signals;

@@ -528,3 +528,35 @@ fn nul_bytes_in_xkb_names_and_cursor_theme() {
     f.niri_state().reload_config(Ok(config));
     f.dispatch();
 }
+
+#[test]
+fn security_context_with_unusable_listen_fd() {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::net::UnixStream;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let client = f.client(id);
+    let manager = client.state.security_context_manager.clone().unwrap();
+    let qh = client.qh.clone();
+    let (close_fd, _close_peer) = UnixStream::pair().unwrap();
+
+    // A regular file can't be added to epoll.
+    let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+    let context = manager.create_listener(file.as_fd(), close_fd.as_fd(), &qh, ());
+    context.commit();
+    f.double_roundtrip(id);
+
+    // accept() on a socket that isn't listening fails with EINVAL. The socket becomes readable
+    // once its peer closes.
+    let (listen_fd, peer) = UnixStream::pair().unwrap();
+    let context = manager.create_listener(listen_fd.as_fd(), close_fd.as_fd(), &qh, ());
+    context.commit();
+    f.double_roundtrip(id);
+    drop(peer);
+    f.dispatch();
+    f.dispatch();
+    f.double_roundtrip(id);
+}

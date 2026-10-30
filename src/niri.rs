@@ -185,6 +185,7 @@ use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+use crate::utils::listening_socket::{insert_listening_socket, OnAcceptError};
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
@@ -2827,15 +2828,20 @@ impl Niri {
         let socket_name = create_wayland_socket.then(|| {
             let socket_source = ListeningSocketSource::new_auto().unwrap();
             let socket_name = socket_source.socket_name().to_os_string();
-            event_loop
-                .insert_source(socket_source, move |client, _, state| {
+            insert_listening_socket(
+                &event_loop,
+                String::from("the Wayland socket"),
+                OnAcceptError::Pause,
+                socket_source,
+                move |client, _, state| {
                     state.niri.insert_client(NewClient {
                         client,
                         restricted: false,
                         credentials_unknown: false,
                     });
-                })
-                .unwrap();
+                },
+            )
+            .unwrap();
             socket_name
         });
 
