@@ -23,6 +23,7 @@ mod pointer_inactivity;
 mod pointer_redraws;
 mod remove_output;
 mod screenshot;
+mod session_lock;
 mod tiled_state;
 mod transactions;
 mod virtual_pointer;

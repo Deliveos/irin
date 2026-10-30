@@ -15,6 +15,9 @@ use calloop_wayland_source::WaylandSource;
 use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1};
 use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_session_lock_v1::{self, ExtSessionLockV1};
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
@@ -82,6 +85,7 @@ pub struct State {
     pub subcompositor: Option<WlSubcompositor>,
     pub xdg_wm_base: Option<XdgWmBase>,
     pub layer_shell: Option<ZwlrLayerShellV1>,
+    pub session_lock_manager: Option<ExtSessionLockManagerV1>,
     pub virtual_pointer_manager: Option<ZwlrVirtualPointerManagerV1>,
     pub virtual_pointer: Option<ZwlrVirtualPointerV1>,
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
@@ -229,6 +233,13 @@ pub struct SyncData {
     pub done: AtomicBool,
 }
 
+/// What an ext-session-lock lock object has received.
+#[derive(Debug, Default)]
+pub struct SessionLockData {
+    pub locked: AtomicBool,
+    pub finished: AtomicBool,
+}
+
 static CLIENT_ID_COUNTER: IdCounter = IdCounter::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -322,6 +333,7 @@ impl Client {
             subcompositor: None,
             xdg_wm_base: None,
             layer_shell: None,
+            session_lock_manager: None,
             virtual_pointer_manager: None,
             virtual_pointer: None,
             spbm: None,
@@ -395,6 +407,28 @@ impl Client {
             .unwrap()
             .0
             .clone()
+    }
+}
+
+impl Client {
+    /// Locks the session with a lock surface on every output.
+    ///
+    /// The lock surfaces get a buffer of the configured size on every configure.
+    pub fn lock_session(&mut self) -> (ExtSessionLockV1, Arc<SessionLockData>) {
+        let data = Arc::new(SessionLockData::default());
+        let qh = self.state.qh.clone();
+        let manager = self.state.session_lock_manager.as_ref().unwrap();
+        let lock = manager.lock(&qh, data.clone());
+
+        let outputs: Vec<_> = self.state.outputs.keys().cloned().collect();
+        for output in outputs {
+            let surface = self.state.create_surface();
+            let viewport = self.state.viewporter.as_ref().unwrap();
+            let viewport = viewport.get_viewport(&surface, &qh, ());
+            lock.get_lock_surface(&surface, &output, &qh, (surface.clone(), viewport));
+        }
+
+        (lock, data)
     }
 }
 
@@ -793,6 +827,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ZwlrLayerShellV1::interface().name {
                     let version = min(version, ZwlrLayerShellV1::interface().version);
                     state.layer_shell = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ExtSessionLockManagerV1::interface().name {
+                    let version = min(version, ExtSessionLockManagerV1::interface().version);
+                    state.session_lock_manager = Some(registry.bind(name, version, qh, ()));
                 } else if interface == ZwlrVirtualPointerManagerV1::interface().name {
                     let version = min(version, ZwlrVirtualPointerManagerV1::interface().version);
                     state.virtual_pointer_manager = Some(registry.bind(name, version, qh, ()));
@@ -1022,6 +1059,51 @@ impl Dispatch<ZwlrLayerShellV1, ()> for State {
     }
 }
 
+impl Dispatch<ExtSessionLockV1, Arc<SessionLockData>> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ExtSessionLockV1,
+        event: <ExtSessionLockV1 as wayland_client::Proxy>::Event,
+        data: &Arc<SessionLockData>,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_v1::Event::Locked => data.locked.store(true, Ordering::Relaxed),
+            ext_session_lock_v1::Event::Finished => data.finished.store(true, Ordering::Relaxed),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<ExtSessionLockSurfaceV1, (WlSurface, WpViewport)> for State {
+    fn event(
+        state: &mut Self,
+        lock_surface: &ExtSessionLockSurfaceV1,
+        event: <ExtSessionLockSurfaceV1 as wayland_client::Proxy>::Event,
+        (surface, viewport): &(WlSurface, WpViewport),
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => {
+                let spbm = state.spbm.as_ref().unwrap();
+                let buffer = spbm.create_u32_rgba_buffer(0, 0, 0, u32::MAX, qh, ());
+                surface.attach(Some(&buffer), 0, 0);
+                viewport.set_destination(width as i32, height as i32);
+                lock_surface.ack_configure(serial);
+                surface.commit();
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+wayland_client::delegate_noop!(State: ExtSessionLockManagerV1);
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerManagerV1);
 wayland_client::delegate_noop!(State: ignore WlSubcompositor);
 wayland_client::delegate_noop!(State: ignore WlSubsurface);

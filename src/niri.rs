@@ -6973,6 +6973,13 @@ impl Niri {
         }
     }
 
+    #[cfg(test)]
+    pub fn has_screen_transition(&self) -> bool {
+        self.output_state
+            .values()
+            .any(|state| state.screen_transition.is_some())
+    }
+
     pub fn is_locked(&self) -> bool {
         match self.lock_state {
             LockState::Unlocked | LockState::WaitingForSurfaces { .. } => false,
@@ -7076,6 +7083,11 @@ impl Niri {
                 self.cancel_mru();
                 // Otherwise the first key at the lock screen goes to the dialog, and Enter quits.
                 self.exit_confirm_dialog.hide();
+                // Screen transitions are snapshots of the unlocked outputs, and they are drawn on
+                // top of the lock screen.
+                for state in self.output_state.values_mut() {
+                    state.screen_transition = None;
+                }
 
                 // I don't like this being asynchronous, but it would be a bit involved to move
                 // this whole function to State. This should do for now.
