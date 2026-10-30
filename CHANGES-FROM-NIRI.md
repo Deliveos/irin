@@ -231,6 +231,13 @@ The spawn fix is about a background thread that never finished.
     niri takes the logind power-key inhibitor only at startup, but its own power-key action follows the live config, so removing the option on a reload makes niri suspend while logind also acts on the key, by default powering off.
     In session instances, nori takes or drops the inhibitor when this option changes, and takes it on a separate thread, since the D-Bus call blocks ([9004e44c](https://github.com/Deliveos/nori/commit/9004e44cb5860979055984c29b05964ef45574ec), [#141](https://github.com/Deliveos/nori/pull/141); fixes [#23](https://github.com/Deliveos/nori/issues/23), [#135](https://github.com/Deliveos/nori/issues/135)).
 
+### IPC
+
+- **Event stream clients during bursts of events.**
+    niri queues at most 64 events for each event stream client (such as a bar or `nori msg event-stream`) and drops a client whose queue is full.
+    The clients are served on the compositor's own event loop, so they can't take any events while one refresh produces them, and a refresh with more than 64 events (for example, more than 64 windows changing their title at once) drops every event stream client, however fast it reads.
+    nori limits each client's queue to 1 MiB (1048576 bytes) of serialized events instead (the initial state is queued even when it is larger), and serializes each event once for all clients instead of once per client ([#214](https://github.com/Deliveos/nori/pull/214); fixes [#171](https://github.com/Deliveos/nori/issues/171)).
+
 ## Performance
 
 Numbers in this section are the issues' measurements or estimates; most come from a benchmark that is kept outside the repository ([#58](https://github.com/Deliveos/nori/issues/58)).

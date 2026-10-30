@@ -110,3 +110,145 @@ fn socket_gets_reply_to_oversized_request() {
     let err = reply.unwrap().unwrap_err();
     assert!(err.starts_with("request is longer than"), "{err}");
 }
+
+#[test]
+fn event_stream_client_gets_a_burst_of_events() {
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use niri_ipc::socket::Socket;
+    use niri_ipc::{Event, Request};
+
+    const WINDOWS: usize = 100;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let mut surfaces = Vec::new();
+    for i in 0..WINDOWS {
+        let surface = create_unmapped(&mut f, id, &format!("a{i}"));
+        commit_buffer(&mut f, id, &surface);
+        f.double_roundtrip(id);
+        surfaces.push(surface);
+    }
+
+    let dir = std::env::temp_dir().join(format!("niri-test-ipc-burst-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("socket");
+    let listener = UnixListener::bind(&path).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut socket = Socket::connect_to(&path).unwrap();
+        socket.send(Request::EventStream).unwrap().unwrap();
+        let mut read_event = socket.read_events();
+        // Stops when niri disconnects the client.
+        while let Ok(event) = read_event() {
+            if tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    let (server, _) = listener.accept().unwrap();
+    crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
+
+    // Reads events until one matches, while dispatching niri.
+    let wait_for = |f: &mut Fixture, pred: &mut dyn FnMut(&Event) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            f.dispatch();
+            match rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(event) if pred(&event) => return,
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => (),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("niri disconnected the event stream client")
+                }
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for an event");
+        }
+    };
+
+    wait_for(
+        &mut f,
+        &mut |event| matches!(event, Event::WindowsChanged { windows } if windows.len() == WINDOWS),
+    );
+
+    // Change every title in one refresh, which makes one event per window, more than the old
+    // limit of 64 queued events.
+    for (i, surface) in surfaces.iter().enumerate() {
+        f.client(id).window(surface).set_title(&format!("b{i}"));
+    }
+    f.roundtrip(id);
+
+    let mut changed = std::collections::HashSet::new();
+    wait_for(&mut f, &mut |event| {
+        if let Event::WindowOpenedOrChanged { window } = event {
+            changed.insert(window.title.clone().unwrap());
+        }
+        changed.len() == WINDOWS
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn event_stream_client_that_doesnt_read_is_dropped() {
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+
+    use niri_ipc::socket::Socket;
+    use niri_ipc::Request;
+
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let mut surfaces = Vec::new();
+    for i in 0..10 {
+        let surface = create_unmapped(&mut f, id, &format!("a{i}"));
+        commit_buffer(&mut f, id, &surface);
+        f.double_roundtrip(id);
+        surfaces.push(surface);
+    }
+
+    let dir = std::env::temp_dir().join(format!("niri-test-ipc-stalled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("socket");
+    let listener = UnixListener::bind(&path).unwrap();
+
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut socket = Socket::connect_to(&path).unwrap();
+        socket.send(Request::EventStream).unwrap().unwrap();
+        // Keep the socket open without reading from it.
+        let _ = done_rx.recv();
+        drop(socket);
+    });
+    let (server, _) = listener.accept().unwrap();
+    crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
+
+    let stream_count = |f: &mut Fixture| f.niri().ipc_server.as_ref().unwrap().event_stream_count();
+    while stream_count(&mut f) == 0 {
+        f.dispatch();
+    }
+
+    // Each round makes 10 events of over 1000 bytes. niri should drop the client after its
+    // socket buffer and the 1 MiB queue fill up.
+    let long = "x".repeat(1000);
+    let mut rounds = 0;
+    while stream_count(&mut f) == 1 {
+        assert!(rounds < 2000, "niri kept the client that doesn't read");
+        for (i, surface) in surfaces.iter().enumerate() {
+            f.client(id)
+                .window(surface)
+                .set_title(&format!("{rounds} {i} {long}"));
+        }
+        f.roundtrip(id);
+        f.dispatch();
+        rounds += 1;
+    }
+
+    drop(done_tx);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
