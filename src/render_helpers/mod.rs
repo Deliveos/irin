@@ -190,7 +190,7 @@ pub struct CaptureTexture(Option<(ContextId<GlesTexture>, Fourcc, GlesTexture)>)
 
 impl CaptureTexture {
     /// Returns the texture, creating it if the size, the format or the renderer changed.
-    fn get(
+    pub(crate) fn get(
         &mut self,
         renderer: &mut GlesRenderer,
         size: Size<i32, Physical>,
@@ -213,6 +213,15 @@ impl CaptureTexture {
             }
         };
         Ok(texture)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Frees the texture; the next capture allocates a new one.
+    pub fn clear(&mut self) {
+        self.0 = None;
     }
 }
 

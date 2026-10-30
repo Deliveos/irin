@@ -915,11 +915,16 @@ impl State {
     }
 
     pub fn ipc_refresh_casts(&mut self) {
+        let _span = tracy_client::span!("State::ipc_refresh_casts");
+
+        // Clear expired screencopy casts. Ideally we'd have a deadline timer, but our 1 second
+        // frame callback timer calls refresh regularly, so that's fine as is. This also frees idle
+        // screencopy textures, so it runs even without the IPC server.
+        self.niri.screencopy_state.clear_expired_casts();
+
         let Some(server) = &self.niri.ipc_server else {
             return;
         };
-
-        let _span = tracy_client::span!("State::ipc_refresh_casts");
 
         let mut state = server.event_stream_state.borrow_mut();
         let state = &mut state.casts;
@@ -979,12 +984,7 @@ impl State {
             }
         }
 
-        // Check screencopy casts.
-        //
-        // First, clear expired casts. Ideally we'd have a deadline timer, but our 1 second frame
-        // callback timer calls refresh regularly, so that's fine as is.
-        self.niri.screencopy_state.clear_expired_casts();
-
+        // Check screencopy casts (expired ones were cleared above).
         for queue in self.niri.screencopy_state.queues() {
             if let Some(cast_info) = queue.cast() {
                 let stream_id = cast_info.stream_id.get();

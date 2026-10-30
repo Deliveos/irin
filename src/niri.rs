@@ -163,7 +163,9 @@ use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
 use crate::protocols::mutter_x11_interop::MutterX11InteropManagerState;
 use crate::protocols::output_management::OutputManagementManagerState;
-use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
+use crate::protocols::screencopy::{
+    Screencopy, ScreencopyBuffer, ScreencopyManagerState, ShmTexture,
+};
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
@@ -174,8 +176,7 @@ use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{
     encompassing_geo, render_for_shm, render_to_dmabuf, render_to_encompassing_texture,
-    render_to_texture, render_to_vec, shaders, CaptureTexture, PendingCapture, RenderCtx,
-    RenderTarget,
+    render_to_texture, render_to_vec, shaders, PendingCapture, RenderCtx, RenderTarget,
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
@@ -6484,7 +6485,7 @@ impl Niri {
     fn render_for_screencopy_internal(
         renderer: &mut GlesRenderer,
         damage_tracker: &mut OutputDamageTracker,
-        texture: &mut CaptureTexture,
+        texture: &mut ShmTexture,
         elements: &[impl RenderElement<GlesRenderer>],
         states: RenderElementStates,
         screencopy: &Screencopy,
@@ -6503,7 +6504,7 @@ impl Niri {
             ScreencopyBuffer::Shm(wl_buffer) => render_for_shm(
                 renderer,
                 damage_tracker,
-                texture,
+                texture.for_shm_copy(),
                 wl_buffer,
                 wl_shm::Format::Xrgb8888,
                 elements,
