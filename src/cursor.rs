@@ -291,6 +291,10 @@ impl CursorTextureCache {
 ///
 /// `parse_xcursor()` allocates the pixels of an image as declared in its header, up to about 4 GiB,
 /// before it finds out that the file is shorter, so check this first.
+///
+/// `parse_xcursor()` also reads an image again for every entry of the table of contents that
+/// points at it, so the images of all entries together must fit in the file too. Otherwise a small
+/// file with many entries pointing at one image makes it allocate many times the file's length.
 fn check_image_sizes(file: &[u8]) -> anyhow::Result<()> {
     const IMAGE_TYPE: u32 = 0xfffd_0002;
     // Header size, type, nominal size, version, width, height, hotspot x and y, delay.
@@ -306,6 +310,7 @@ fn check_image_sizes(file: &[u8]) -> anyhow::Result<()> {
     let (Some(header_len), Some(ntoc)) = (u32_at(4), u32_at(12)) else {
         return Ok(());
     };
+    let mut total_len = 0;
     for i in 0..u64::from(ntoc) {
         let entry = u64::from(header_len) + i * 12;
         let (Some(toc_type), Some(pos)) = (u32_at(entry), u32_at(entry + 8)) else {
@@ -324,6 +329,13 @@ fn check_image_sizes(file: &[u8]) -> anyhow::Result<()> {
         ensure!(
             u128::from(pos) + IMAGE_HEADER_LEN + len <= file.len() as u128,
             "cursor image of {width} × {height} doesn't fit in the file"
+        );
+
+        // Can't overflow: every term and the total so far are at most the file's length.
+        total_len += IMAGE_HEADER_LEN + len;
+        ensure!(
+            total_len <= file.len() as u128,
+            "cursor images of all entries together don't fit in the file"
         );
     }
 
@@ -440,15 +452,23 @@ mod tests {
 
     /// An Xcursor file with one image of the given size and the given pixel bytes.
     fn xcursor_file(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        xcursor_file_with_entries(1, width, height, pixels)
+    }
+
+    /// An Xcursor file with one image and `entries` table of contents entries that all point at
+    /// it.
+    fn xcursor_file_with_entries(entries: u32, width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
         let mut file = Vec::new();
-        for value in [16, 0x1_0000, 1] {
+        for value in [16, 0x1_0000, entries] {
             // Header size, version, number of entries.
             file.extend_from_slice(&u32::to_le_bytes(value));
         }
         file.splice(0..0, *b"Xcur");
-        // Table of contents: an image of nominal size 24 at position 28.
-        for value in [0xfffd_0002, 24, 28] {
-            file.extend_from_slice(&u32::to_le_bytes(value));
+        // Table of contents: an image of nominal size 24 right after the table.
+        for _ in 0..entries {
+            for value in [0xfffd_0002, 24, 16 + 12 * entries] {
+                file.extend_from_slice(&u32::to_le_bytes(value));
+            }
         }
         // Image header: header size, type, nominal size, version, width, height, hotspot, delay.
         for value in [36, 0xfffd_0002, 24, 1, width, height, 0, 0, 0] {
@@ -472,6 +492,24 @@ mod tests {
         assert!(check_image_sizes(&file).is_err());
 
         let file = xcursor_file(u32::MAX, u32::MAX, &[1, 2, 3, 4]);
+        assert!(check_image_sizes(&file).is_err());
+    }
+
+    #[test]
+    fn many_entries_pointing_at_one_image_are_rejected_before_parsing() {
+        // Header 16 + entries 2 × 12 + image 36 + 4 = 80 bytes, and the two entries read
+        // 2 × (36 + 4) = 80 bytes.
+        let file = xcursor_file_with_entries(2, 1, 1, &[1, 2, 3, 4]);
+        check_image_sizes(&file).unwrap();
+        assert_eq!(parse_xcursor(&file).unwrap().len(), 2);
+
+        // 16 + 3 × 12 + 40 = 92 bytes, but the three entries read 3 × 40 = 120 bytes.
+        let file = xcursor_file_with_entries(3, 1, 1, &[1, 2, 3, 4]);
+        assert!(check_image_sizes(&file).is_err());
+
+        // Each image fits in the file, but without the check, parse_xcursor() would allocate
+        // 1000 × 2 × 4 × 64 × 64 bytes (about 31 MiB) for a file of about 28 KiB.
+        let file = xcursor_file_with_entries(1000, 64, 64, &[0; 4 * 64 * 64]);
         assert!(check_image_sizes(&file).is_err());
     }
 
