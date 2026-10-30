@@ -1,6 +1,7 @@
 use niri_config::{Config, FloatOrInt, OutputName, Outputs};
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::ZwlrOutputManagerV1;
 
-use super::client::ClientId;
+use super::client::{ClientId, OutputConfigurationResult, OutputHead};
 use super::*;
 use crate::protocols::output_management::OutputManagementHandler as _;
 
@@ -156,4 +157,121 @@ fn enabling_an_output_with_a_custom_mode_is_sent() {
     f.roundtrip(id);
     let current = client_current_mode(&mut f, id);
     assert_eq!(current, (true, Some((1280, 720, 50_000))));
+}
+
+/// Returns the client's head for headless-1 that this manager announced.
+fn head_of<'a>(f: &'a mut Fixture, id: ClientId, manager: &ZwlrOutputManagerV1) -> &'a OutputHead {
+    f.client(id)
+        .state
+        .output_heads
+        .iter()
+        .find(|head| head.manager == *manager && head.name.as_deref() == Some("headless-1"))
+        .unwrap()
+}
+
+/// Returns the width, height and refresh rate of the current mode of the manager's head.
+fn current_mode_of(
+    f: &mut Fixture,
+    id: ClientId,
+    manager: &ZwlrOutputManagerV1,
+) -> Option<(i32, i32, i32)> {
+    let mode = head_of(f, id, manager).current_mode.clone()?;
+    let mode = &f.client(id).state.output_modes[&mode];
+    Some((mode.size.0, mode.size.1, mode.refresh))
+}
+
+/// Adds a client whose two parts each bind wlr-output-management, and returns both managers.
+fn add_client_with_two_managers(
+    f: &mut Fixture,
+) -> (ClientId, ZwlrOutputManagerV1, ZwlrOutputManagerV1) {
+    let id = f.add_client();
+    f.roundtrip(id);
+    let first = f.client(id).state.output_manager.clone().unwrap();
+    let second = f.client(id).bind_output_manager();
+    f.roundtrip(id);
+    (id, first, second)
+}
+
+fn two_modes() -> Vec<niri_ipc::Mode> {
+    vec![mode(1920, 1080, 60_000), mode(1920, 1080, 144_000)]
+}
+
+#[test]
+fn output_manager_bound_twice_gets_changes_on_both() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    set_ipc_modes(&mut f, two_modes(), Some(0));
+    let (id, first, second) = add_client_with_two_managers(&mut f);
+
+    set_ipc_modes(&mut f, two_modes(), Some(1));
+    f.roundtrip(id);
+    for manager in [&first, &second] {
+        let current = current_mode_of(&mut f, id, manager);
+        assert_eq!(current, Some((1920, 1080, 144_000)));
+    }
+}
+
+#[test]
+fn releasing_a_head_of_one_output_manager_keeps_the_other() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    set_ipc_modes(&mut f, two_modes(), Some(0));
+    let (id, first, second) = add_client_with_two_managers(&mut f);
+
+    head_of(&mut f, id, &first).head.release();
+    f.roundtrip(id);
+
+    set_ipc_modes(&mut f, two_modes(), Some(1));
+    f.roundtrip(id);
+    let current = current_mode_of(&mut f, id, &second);
+    assert_eq!(current, Some((1920, 1080, 144_000)));
+}
+
+#[test]
+fn stopping_one_output_manager_keeps_the_other() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    set_ipc_modes(&mut f, two_modes(), Some(0));
+    let (id, first, second) = add_client_with_two_managers(&mut f);
+
+    first.stop();
+    f.roundtrip(id);
+
+    set_ipc_modes(&mut f, two_modes(), Some(1));
+    f.roundtrip(id);
+    let current = current_mode_of(&mut f, id, &second);
+    assert_eq!(current, Some((1920, 1080, 144_000)));
+}
+
+#[test]
+fn set_mode_works_through_the_first_of_two_output_managers() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    set_ipc_modes(&mut f, two_modes(), Some(0));
+    let (id, first, _second) = add_client_with_two_managers(&mut f);
+
+    // Pick the first manager's 144 Hz mode.
+    let head = head_of(&mut f, id, &first).head.clone();
+    let modes = head_of(&mut f, id, &first).modes.clone();
+    let state = &f.client(id).state;
+    let mode = modes
+        .into_iter()
+        .find(|m| {
+            state
+                .output_modes
+                .get(m)
+                .is_some_and(|m| m.refresh == 144_000)
+        })
+        .unwrap();
+
+    let client = f.client(id);
+    let qh = client.qh.clone();
+    let conf = first.create_configuration(client.state.output_manager_serial, &qh, ());
+    let conf_head = conf.enable_head(&head, &qh, ());
+    conf_head.set_mode(&mode);
+    conf.apply();
+    f.roundtrip(id);
+
+    let result = f.client(id).state.output_configurations.get(&conf).copied();
+    assert_eq!(result, Some(OutputConfigurationResult::Succeeded));
 }

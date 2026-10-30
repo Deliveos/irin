@@ -188,6 +188,9 @@ The spawn fix is about a background thread that never finished.
 - **Current mode after the mode list changes.**
     Switching between a normal mode and a custom mode or modeline adds or removes a mode, and niri then doesn't tell wlr-output-management clients the new current mode, so a client that was already running shows another mode as current, and sending it back switches to that mode; turning on an output with a custom mode isn't reported to them at all.
     nori sends the current mode, and that the output is on, whenever they change ([#139](https://github.com/Deliveos/nori/pull/139); fixes [#131](https://github.com/Deliveos/nori/issues/131)).
+- **wlr-output-management bound twice by one client.**
+    niri keeps one wlr-output-management state per client, so when one client binds the manager twice (for example two modules of one panel), the second binding replaces the first: the first manager stops getting changes, `set_mode` with a mode of the first manager is a protocol error that disconnects the client, and releasing a head or stopping either manager acts on the second one.
+    nori keeps the state per manager ([#223](https://github.com/Deliveos/nori/pull/223); fixes [#169](https://github.com/Deliveos/nori/issues/169)).
 
 ### Screenshots
 
