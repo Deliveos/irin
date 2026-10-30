@@ -217,6 +217,9 @@ The spawn fix is about a background thread that never finished.
 
 ### Session
 
+- **Several idle inhibitors on one surface.**
+    niri keeps a set of surfaces with idle inhibitors and removes a surface when any of its inhibitors is destroyed, so if a client has two inhibitors on one surface and destroys one of them, the screen can blank or lock while the other one still exists.
+    nori counts the inhibitors of each surface and stops inhibiting when the last one is destroyed ([#216](https://github.com/Deliveos/nori/pull/216); fixes [#168](https://github.com/Deliveos/nori/issues/168)).
 - <a id="portal-at-session-start"></a>**Portal started before the session.**
     xdg-desktop-portal picks its backends once at startup from `XDG_CURRENT_DESKTOP`.
     If it was restarted between two sessions (after the variable was unset at logout), it uses the GTK backend, which has no screencasting, for the whole next session.

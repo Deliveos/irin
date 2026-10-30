@@ -14,6 +14,7 @@ mod display_config;
 mod floating;
 mod foreign_toplevel;
 mod fullscreen;
+mod idle_inhibit;
 mod ipc;
 mod layer_shell;
 mod output_enter;

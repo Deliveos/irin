@@ -372,7 +372,8 @@ pub struct Niri {
     pub bind_repeat_timer: Option<RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
-    pub idle_inhibiting_surfaces: HashSet<WlSurface>,
+    /// Surfaces with idle inhibitors, and how many inhibitors each has.
+    pub idle_inhibiting_surfaces: HashMap<WlSurface, usize>,
     pub is_fdo_idle_inhibited: Arc<AtomicBool>,
     pub keyboard_shortcuts_inhibiting_surfaces: HashMap<WlSurface, KeyboardShortcutsInhibitor>,
 
@@ -2944,7 +2945,7 @@ impl Niri {
             seat,
             keyboard_focus: KeyboardFocus::Layout { surface: None },
             layer_shell_on_demand_focus: None,
-            idle_inhibiting_surfaces: HashSet::new(),
+            idle_inhibiting_surfaces: HashMap::new(),
             is_fdo_idle_inhibited: Arc::new(AtomicBool::new(false)),
             keyboard_shortcuts_inhibiting_surfaces: HashMap::new(),
             xkb_from_locale1: None,
@@ -4507,10 +4508,10 @@ impl Niri {
     pub fn refresh_idle_inhibit(&mut self) {
         let _span = tracy_client::span!("Niri::refresh_idle_inhibit");
 
-        self.idle_inhibiting_surfaces.retain(|s| s.is_alive());
+        self.idle_inhibiting_surfaces.retain(|s, _| s.is_alive());
 
         let is_inhibited = self.is_fdo_idle_inhibited.load(Ordering::SeqCst)
-            || self.idle_inhibiting_surfaces.iter().any(|surface| {
+            || self.idle_inhibiting_surfaces.keys().any(|surface| {
                 with_states(surface, |states| {
                     surface_primary_scanout_output(surface, states).is_some()
                 })

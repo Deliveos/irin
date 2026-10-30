@@ -5,6 +5,7 @@ mod layer_shell;
 pub mod virtual_keyboard;
 mod xdg_shell;
 
+use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
@@ -543,11 +544,21 @@ impl IdleNotifierHandler for State {
 
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
-        self.niri.idle_inhibiting_surfaces.insert(surface);
+        *self
+            .niri
+            .idle_inhibiting_surfaces
+            .entry(surface)
+            .or_default() += 1;
     }
 
     fn uninhibit(&mut self, surface: WlSurface) {
-        self.niri.idle_inhibiting_surfaces.remove(&surface);
+        // A surface can have several inhibitors; keep inhibiting until the last one is destroyed.
+        if let Entry::Occupied(mut entry) = self.niri.idle_inhibiting_surfaces.entry(surface) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
     }
 }
 
