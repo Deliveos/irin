@@ -399,6 +399,14 @@ Numbers in this section are the issues' measurements or estimates; most come fro
 - **Shadows turned off.**
     niri computes shadow geometry for every tile on every frame even when shadows are off (the default).
     nori skips it when shadows are off ([0d07ecd1](https://github.com/Deliveos/nori/commit/0d07ecd11d434564bb3c58e98be90879fc46cddd); fixes [#44](https://github.com/Deliveos/nori/issues/44)).
+- **Background blur at the output edge.**
+    niri sizes the texture for a non-xray background effect (such as blur) by the element's on-screen part, so while the element crosses the output edge it allocates a new texture and a new blur chain on every frame: with the default 3 blur passes about 2.33 × width × height × 4 bytes, about 19 MB per frame for a 1920 × 1080 element, for each render target that draws it (calculation from the issue, not measured).
+    On each axis where a texture for the whole element fits in the output size, nori sizes the texture by the whole element, so on that axis its size stays the same while the element crosses the output edge and is at most the output size.
+    On the other axes nori sizes it as niri does: by the on-screen part, divided by the zoom when the element is zoomed out (as in the overview), which can be larger than the output.
+    nori fills the off-screen part of the texture by stretching the edge rows and columns of the on-screen part with nearest filtering, so it holds the edge pixels that niri's clamp-to-edge sampling reads beyond its texture edge: exactly when the texture isn't scaled, and approximately when it is (as in the overview).
+    In exchange, the blur of a partly visible element runs over its whole size on those axes instead of only its on-screen part, which costs at most as much as when the element is fully on screen.
+    In the tests, without blur and at scale 1, the drawn pixels are the same as in niri; with blur, or when the texture is scaled as in the overview, the result can differ slightly, because the blur then also runs over the off-screen part and the on-screen part lands on rounded texture pixels.
+    Tests are in `src/render_helpers/framebuffer_effect.rs` ([#242](https://github.com/Deliveos/nori/pull/242); fixes [#190](https://github.com/Deliveos/nori/issues/190)).
 
 ### Work on every event loop iteration
 
