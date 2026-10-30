@@ -46,7 +46,7 @@ pub struct ScreencopyQueue {
     credentials: Option<Credentials>,
     damage_tracker: OutputDamageTracker,
     /// Offscreen texture for SHM frames.
-    texture: CaptureTexture,
+    texture: ShmTexture,
     /// Frames waiting for the client to call copy or destroy.
     pending_frames: HashSet<ZwlrScreencopyFrameV1>,
     /// Queue of screencopies waiting for a corresponding output redraw with damage.
@@ -94,11 +94,27 @@ impl ScreencopyCast {
     }
 }
 
+/// Offscreen texture for SHM frames, kept across the copies of a screencopy manager.
+#[derive(Default)]
+pub struct ShmTexture {
+    texture: CaptureTexture,
+    /// When an SHM copy last took `texture`.
+    last_used: Duration,
+}
+
+impl ShmTexture {
+    /// Returns the texture for rendering an SHM copy, and records the time.
+    pub fn for_shm_copy(&mut self) -> &mut CaptureTexture {
+        self.last_used = get_monotonic_time();
+        &mut self.texture
+    }
+}
+
 impl ScreencopyQueue {
     pub fn new(credentials: Option<Credentials>) -> Self {
         Self {
             damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
-            texture: CaptureTexture::default(),
+            texture: ShmTexture::default(),
             pending_frames: HashSet::new(),
             screencopies: Vec::new(),
             cast: None,
@@ -123,7 +139,7 @@ impl ScreencopyQueue {
         &mut self,
     ) -> (
         &mut OutputDamageTracker,
-        &mut CaptureTexture,
+        &mut ShmTexture,
         Option<&Screencopy>,
     ) {
         let ScreencopyQueue {
@@ -171,11 +187,22 @@ impl ScreencopyQueue {
     }
 
     pub fn clear_expired_cast(&mut self) {
+        if self.cast.is_none() && self.texture.texture.is_empty() {
+            return;
+        }
+
+        let now = get_monotonic_time();
         if let Some(cast) = &self.cast {
             // Check deadline if there are no in-flight frames.
-            if self.screencopies.is_empty() && cast.deadline <= get_monotonic_time() {
+            if self.screencopies.is_empty() && cast.deadline <= now {
                 self.cast = None;
             }
+        }
+
+        // The manager can stay alive long after the last capture (see CAST_TIMEOUT), so free the
+        // texture once no SHM copy has used it for that long and no copy waits for damage.
+        if self.screencopies.is_empty() && self.texture.last_used + CAST_TIMEOUT <= now {
+            self.texture.texture.clear();
         }
     }
 
@@ -255,7 +282,7 @@ impl ScreencopyManagerState {
     pub fn damage_tracker(
         &mut self,
         manager: &ZwlrScreencopyManagerV1,
-    ) -> Option<(&mut OutputDamageTracker, &mut CaptureTexture)> {
+    ) -> Option<(&mut OutputDamageTracker, &mut ShmTexture)> {
         let queue = self.queues.get_mut(manager)?;
         Some((&mut queue.damage_tracker, &mut queue.texture))
     }
@@ -734,5 +761,63 @@ impl Screencopy {
                     .unwrap();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::egl::native::EGLSurfacelessDisplay;
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::output::{PhysicalProperties, Subpixel};
+
+    use super::*;
+
+    #[test]
+    fn egl_idle_queue_frees_its_texture() {
+        let mut renderer = unsafe {
+            let display = EGLDisplay::new(EGLSurfacelessDisplay).unwrap();
+            let context = EGLContext::new(&display).unwrap();
+            GlesRenderer::new(context).unwrap()
+        };
+
+        let mut queue = ScreencopyQueue::new(None);
+        let size = Size::from((64, 64));
+        queue
+            .texture
+            .for_shm_copy()
+            .get(&mut renderer, size, Fourcc::Abgr8888)
+            .unwrap();
+
+        // Used just now: kept.
+        queue.clear_expired_cast();
+        assert!(!queue.texture.texture.is_empty());
+
+        // Unused for CAST_TIMEOUT: freed.
+        queue.texture.last_used = queue.texture.last_used.saturating_sub(CAST_TIMEOUT);
+        queue.clear_expired_cast();
+        assert!(queue.texture.texture.is_empty());
+
+        // A cast whose copies don't use it (DMA-BUF) doesn't keep it either.
+        queue
+            .texture
+            .for_shm_copy()
+            .get(&mut renderer, size, Fourcc::Abgr8888)
+            .unwrap();
+        queue.texture.last_used = queue.texture.last_used.saturating_sub(CAST_TIMEOUT);
+        let output = Output::new(
+            String::from("output"),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        );
+        queue.cast = Some(ScreencopyCast::new(&output));
+        queue.clear_expired_cast();
+        assert!(queue.cast.is_some());
+        assert!(queue.texture.texture.is_empty());
     }
 }

@@ -503,6 +503,7 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
 - **SHM captures.**
     For screencopy, image-copy-capture and PipeWire casts without DMA-BUF, niri allocates a full-size texture for every frame and waits on the main thread for the GPU readback.
     nori reuses one texture per capture and, when the renderer supports fences, copies the pixels once the GPU is done instead of waiting; the copy itself still runs on the main thread ([#109](https://github.com/Deliveos/nori/pull/109); fixes [#30](https://github.com/Deliveos/nori/issues/30)).
+    A wlr-screencopy manager frees its SHM texture (about 33 MB for a 4K output) once no SHM copy has used it for 10 seconds and none of its copies waits for damage, because clients such as xdg-desktop-portal-wlr keep the manager alive between casts; before this fix, the texture was kept for as long as the manager lived ([#229](https://github.com/Deliveos/nori/pull/229); fixes [#163](https://github.com/Deliveos/nori/issues/163)).
 
 ## Memory
 
