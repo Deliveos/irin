@@ -146,6 +146,11 @@ A crash of the compositor ends the whole session.
 - **Negative `xdg_positioner` parent size.**
     In the same smithay version, a negative `set_parent_size` builds a size that fails a debug assertion, so any client can panic builds with debug assertions (the dev profile and `cargo test`); release builds were not affected.
     The smithay fork clamps negative parent sizes to 0 ([#122](https://github.com/Deliveos/nori/pull/122); fixes [#104](https://github.com/Deliveos/nori/issues/104)).
+- **Negative sizes in other client requests.**
+    In the same smithay version, `wl_surface.damage` and `zwp_text_input_v3.set_cursor_rectangle` with a negative width or height, and `zwlr_layer_surface_v1.set_size` with a width or height above `i32::MAX` (which wraps to a negative value), also build a size that fails a debug assertion.
+    So clients can panic builds with debug assertions: any client through `wl_surface.damage`, clients that aren't sandboxed through `set_size` (niri doesn't offer layer-shell to sandboxed ones), and the focused client through `set_cursor_rectangle` while an input method runs.
+    The smithay fork ignores negative surface damage, as smithay already does for `wl_surface.damage_buffer`, clamps negative cursor rectangle sizes to 0, and clamps layer sizes above `i32::MAX` to `i32::MAX`.
+    The tests are `negative_surface_damage`, `negative_text_input_cursor_rectangle` and `huge_layer_surface_size` in `src/tests/crash_regressions.rs` ([#266](https://github.com/Deliveos/nori/pull/266); fixes [#128](https://github.com/Deliveos/nori/issues/128)).
 - **A second toplevel or layer surface for one `wl_surface`.**
     smithay accepts a second `xdg_toplevel` for a surface that already has one (`get_toplevel` twice, or through a second `xdg_surface`), and a second layer surface the same way.
     When the first one isn't mapped yet, niri then hits an `assert!`, so any client (sandboxed ones through xdg-shell) can take the session down with two requests; when it is mapped, niri tracks a second window or layer surface for the same `wl_surface`.
@@ -548,8 +553,8 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
 
 - **smithay fork.**
     niri builds smithay and smithay-drm-extras from [Smithay/smithay](https://github.com/Smithay/smithay) at `8a270232`.
-    nori builds them from [Deliveos/smithay](https://github.com/Deliveos/smithay) at `35cfc75f`, on its `nori` branch: the same version plus the `xdg_positioner` fixes for [#90](https://github.com/Deliveos/nori/issues/90) and [#104](https://github.com/Deliveos/nori/issues/104).
-    Builds that fetch or vendor the dependencies, including the Nix flake, get smithay from there, so the pinned fork commits have to stay reachable from a branch or tag of the fork ([#101](https://github.com/Deliveos/nori/pull/101), [#122](https://github.com/Deliveos/nori/pull/122)).
+    nori builds them from [Deliveos/smithay](https://github.com/Deliveos/smithay) at `e4670d04`, on its `nori` branch: the same version plus the `xdg_positioner` fixes for [#90](https://github.com/Deliveos/nori/issues/90) and [#104](https://github.com/Deliveos/nori/issues/104), and the negative size fixes for [#128](https://github.com/Deliveos/nori/issues/128).
+    Builds that fetch or vendor the dependencies, including the Nix flake, get smithay from there, so the pinned fork commits have to stay reachable from a branch or tag of the fork ([#101](https://github.com/Deliveos/nori/pull/101), [#122](https://github.com/Deliveos/nori/pull/122), [#266](https://github.com/Deliveos/nori/pull/266)).
     Switching back to upstream smithay once the fixes are there is tracked in [#105](https://github.com/Deliveos/nori/issues/105).
 - The renamed packaging files and Nix flake attributes are listed under [Names](#names).
 
@@ -585,4 +590,4 @@ Open issues in nori's own changes:
 - [#105](https://github.com/Deliveos/nori/issues/105): keep the pinned smithay fork commits reachable, and switch back to upstream smithay.
 - [#58](https://github.com/Deliveos/nori/issues/58): keep the performance benchmarks in the repository.
 
-Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#128](https://github.com/Deliveos/nori/issues/128) (smithay), [#154](https://github.com/Deliveos/nori/issues/154) (the smithay part).
+Problems found in upstream niri, or in the smithay version it uses, while working on nori, not fixed yet: [#154](https://github.com/Deliveos/nori/issues/154) (the smithay part).

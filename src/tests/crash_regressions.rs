@@ -560,3 +560,75 @@ fn security_context_with_unusable_listen_fd() {
     f.dispatch();
     f.double_roundtrip(id);
 }
+
+#[test]
+fn negative_surface_damage() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // smithay built the damage rectangle unchecked, and building a negative Size fails a debug
+    // assert.
+    let surface = f.client(id).state.create_surface();
+    surface.damage(0, 0, -1, -1);
+    surface.commit();
+    f.double_roundtrip(id);
+}
+
+#[test]
+fn negative_text_input_cursor_rectangle() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // In niri, smithay handles text input requests only while an input method is running, for the
+    // focused client.
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.commit();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    window.attach_new_buffer();
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    let state = &mut f.client(id).state;
+    let seat = state.seats.keys().next().unwrap().clone();
+    let qh = state.qh.clone();
+    let input_method_manager = state.input_method_manager.as_ref().unwrap();
+    let _input_method = input_method_manager.get_input_method(&seat, &qh, ());
+    let text_input_manager = state.text_input_manager.as_ref().unwrap();
+    let text_input = text_input_manager.get_text_input(&seat, &qh, ());
+    f.double_roundtrip(id);
+
+    // smithay built the cursor rectangle unchecked, and building a negative Size fails a debug
+    // assert.
+    text_input.enable();
+    text_input.set_cursor_rectangle(0, 0, -1, -1);
+    text_input.commit();
+    f.double_roundtrip(id);
+}
+
+#[test]
+fn huge_layer_surface_size() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // smithay cast the u32 size to i32, so values above i32::MAX wrapped to a negative Size, which
+    // fails a debug assert. i32::MAX itself must work too.
+    for size in [u32::MAX, i32::MAX as u32] {
+        let layer = f.client(id).create_layer(None, Layer::Top, "");
+        let surface = layer.surface.clone();
+        layer.set_configure_props(LayerConfigureProps {
+            size: Some((size, size)),
+            ..Default::default()
+        });
+        layer.commit();
+        f.roundtrip(id);
+        let layer = f.client(id).layer(&surface);
+        layer.attach_new_buffer();
+        layer.ack_last_and_commit();
+        f.double_roundtrip(id);
+    }
+}
