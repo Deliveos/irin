@@ -19,6 +19,7 @@ mod ipc;
 mod layer_shell;
 mod output_enter;
 mod output_management;
+mod pick;
 mod pointer_inactivity;
 mod pointer_redraws;
 mod remove_output;

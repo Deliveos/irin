@@ -13,11 +13,16 @@ use crate::window::Mapped;
 
 pub struct PickWindowGrab {
     start_data: PointerGrabStartData<State>,
+    /// Whether a click picked the window; the grab then lasts until all buttons are released.
+    picked: bool,
 }
 
 impl PickWindowGrab {
     pub fn new(start_data: PointerGrabStartData<State>) -> Self {
-        Self { start_data }
+        Self {
+            start_data,
+            picked: false,
+        }
     }
 
     fn on_ungrab(&mut self, state: &mut State) {
@@ -60,22 +65,24 @@ impl PointerGrab<State> for PickWindowGrab {
         handle: &mut PointerInnerHandle<'_, State>,
         event: &ButtonEvent,
     ) {
-        if event.state != ButtonState::Pressed {
-            return;
+        if !self.picked && event.state == ButtonState::Pressed {
+            self.picked = true;
+
+            if let Some(tx) = data.niri.pick_window.take() {
+                let _ = tx.send_blocking(
+                    data.niri
+                        .window_under(handle.current_location())
+                        .map(Mapped::id),
+                );
+            }
         }
 
-        // We're handling this press, don't send the release to the window.
-        data.niri.suppressed_buttons.insert(event.button);
-
-        if let Some(tx) = data.niri.pick_window.take() {
-            let _ = tx.send_blocking(
-                data.niri
-                    .window_under(handle.current_location())
-                    .map(Mapped::id),
-            );
+        // Keep the grab until all buttons are released, so that smithay sees the releases but the
+        // window doesn't get them. If the grab is cancelled before that (for example with Esc),
+        // the remaining releases go to the surface under the pointer.
+        if self.picked && handle.current_pressed().is_empty() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
         }
-
-        handle.unset_grab(self, data, event.serial, event.time, true);
     }
 
     fn axis(

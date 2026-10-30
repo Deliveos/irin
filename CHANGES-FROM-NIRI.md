@@ -295,6 +295,11 @@ The spawn fix is about a background thread that never finished.
 - **Popups above or left of their window.**
     niri computes the output overlap of popups from the window's top-left corner, so a popup entirely above or left of its window (a tooltip above it, a menu opening upward) never gets `wl_surface.enter` and can be drawn at the wrong scale.
     nori uses an overlap area centered on the window ([#92](https://github.com/Deliveos/nori/pull/92); fixes [#72](https://github.com/Deliveos/nori/issues/72)).
+- **Clicks after `pick-window` and `pick-color`.**
+    niri ends a pick on the press of the click and keeps the release from smithay, so smithay counts that button as held until it is pressed and released again: after a pick, a click with another button keeps its click grab after it is released, and so do the interactive resize and view-drag grabs, which keep following the pointer.
+    nori still picks on the press, but keeps the grab until all buttons are released, so smithay sees the releases and the window doesn't get them.
+    If the pick is cancelled while a button is still held (for example with Esc), that release goes to the surface under the pointer, which didn't get the press.
+    The tests are `pick_window_click_is_released` and `pick_color_click_is_released` in `src/tests/pick.rs` ([#231](https://github.com/Deliveos/nori/pull/231); fixes [#166](https://github.com/Deliveos/nori/issues/166)).
 - **Input method popups that move to another window.**
     When focus moves, niri doesn't send `wl_surface.leave` for the old window's output to the input method popup, so a client can keep drawing it at the old output's scale.
     nori sends leave for every output when the popup is dismissed; the popup then enters the new window's output as before ([#126](https://github.com/Deliveos/nori/pull/126); fixes [#98](https://github.com/Deliveos/nori/issues/98)).
