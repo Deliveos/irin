@@ -110,6 +110,9 @@ Later crash fixes added their own cases to that file, except the DisplayConfig s
 The gamma and blur fixes follow rule 2 in [AGENTS.md](AGENTS.md#3-golden-rules): don't block the main thread.
 The spawn fix is about a background thread that never finished.
 
+- **`load-config-file` over IPC with a path on a stalled mount.**
+    niri checks that the path given to `nori msg action load-config-file --path` is a file with a `stat` on the main thread, so a path on a stalled network or FUSE mount freezes the compositor until `stat` returns.
+    nori makes this check on a thread; the reply is the same as before ([#219](https://github.com/Deliveos/nori/pull/219); fixes [#159](https://github.com/Deliveos/nori/issues/159)).
 - **Spawning a program whose exec fails.**
     With the systemd feature (on by default), niri's spawner thread hangs forever when the exec of a spawned program fails, for example because the program is missing: each failed spawn leaves a thread and a process behind, and the error is never logged.
     In nori the intermediate child waits on its pipe with a 2-second timeout, so the spawn returns the error after about 2 seconds and nori logs it ([9029b62d](https://github.com/Deliveos/nori/commit/9029b62d31c2d32304e70ece335ddf03a9f7fb3d); fixes [#17](https://github.com/Deliveos/nori/issues/17)).
