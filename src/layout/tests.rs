@@ -1647,6 +1647,41 @@ fn check_ops(ops: impl IntoIterator<Item = Op>) -> Layout<TestWindow> {
     layout
 }
 
+#[test]
+fn move_floating_column_to_workspace_on_other_output() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddOutput(2),
+        // Output 2: a window on the first workspace, and the second (empty) one focused.
+        Op::FocusOutput(2),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FocusWorkspaceDown,
+        // Output 1: a floating window.
+        Op::FocusOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::ToggleWindowFloating { id: None },
+        Op::MoveColumnToOutput {
+            output_id: 2,
+            target_ws_idx: Some(0),
+            activate: false,
+        },
+    ];
+    let layout = check_ops(ops);
+
+    // The window went to the requested workspace, and output 1 stayed focused.
+    let (mon, ws_idx, _) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&2))
+        .unwrap();
+    assert_eq!(mon.unwrap().output_name(), "output2");
+    assert_eq!(ws_idx, 0);
+    assert_eq!(layout.active_output().unwrap().name(), "output1");
+}
+
 fn workspace_output_name(layout: &Layout<TestWindow>, ws_name: usize) -> &str {
     layout
         .workspaces()
