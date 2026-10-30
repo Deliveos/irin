@@ -268,6 +268,9 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
 - **IPC window list.**
     niri asks each window for its size four times while refreshing the IPC window list, and builds a new set of all window ids to find closed windows.
     nori asks once, and collects window ids only when a window was closed ([#59](https://github.com/Deliveos/nori/pull/59); fixes [#50](https://github.com/Deliveos/nori/issues/50), [#55](https://github.com/Deliveos/nori/issues/55)).
+- **Image-copy-capture constraints.**
+    To see whether an ext-image-copy-capture session needs new buffer constraints, niri reads the session's size through smithay's `current_constraints()`, which clones all of the constraints (the SHM and DMA-BUF format lists with their modifiers), once per iteration for each output capture session and on each refresh of each cursor capture session.
+    nori keeps the size it last sent next to each session and compares with that ([#235](https://github.com/Deliveos/nori/pull/235); fixes [#181](https://github.com/Deliveos/nori/issues/181)).
 - **Dead output surfaces.**
     niri prunes dead surfaces from its outputs on every iteration; nori does it on its existing one-second timer ([#62](https://github.com/Deliveos/nori/pull/62); fixes [#56](https://github.com/Deliveos/nori/issues/56)).
 - **Configure state.**

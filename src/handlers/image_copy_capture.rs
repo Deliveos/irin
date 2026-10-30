@@ -34,6 +34,10 @@ use crate::utils::{get_credentials_for_client, run_when_readable, CastSessionId,
 /// Output capture session.
 pub struct ImageCopySession {
     pub session: Session,
+    /// Size of the buffer constraints last sent to the client.
+    ///
+    /// Kept here because `Session::current_constraints()` clones all of the constraints.
+    pub constraints_size: Option<Size<i32, BufferCoords>>,
     pub damage_tracker: OutputDamageTracker,
     /// Offscreen texture for SHM frames.
     pub texture: CaptureTexture,
@@ -50,6 +54,10 @@ pub struct ImageCopySession {
 /// Cursor capture session of an output.
 pub struct ImageCopyCursorSession {
     pub session: CursorSession,
+    /// Size of the buffer constraints last sent to the client.
+    ///
+    /// Kept here because `CursorSession::current_constraints()` clones all of the constraints.
+    pub constraints_size: Option<Size<i32, BufferCoords>>,
     /// Damage to the cursor image (i.e., not movement).
     pub damage_tracker: OutputDamageTracker,
     /// Offscreen texture for SHM frames.
@@ -141,17 +149,22 @@ pub fn output_capture_constraints(
     })
 }
 
-/// Buffer constraints for capturing the cursor of an output. Argb8888 since it has alpha.
+/// Buffer constraints for capturing the cursor of an output.
 pub fn cursor_capture_constraints(niri: &Niri, output: &Output) -> BufferConstraints {
+    cursor_capture_constraints_for_size(cursor_capture_size(niri, output))
+}
+
+/// Buffer constraints for capturing a cursor of this size. Argb8888 since it has alpha.
+pub fn cursor_capture_constraints_for_size(size: Size<i32, BufferCoords>) -> BufferConstraints {
     BufferConstraints {
-        size: cursor_capture_size(niri, output),
+        size,
         shm: vec![wl_shm::Format::Argb8888],
         dma: None,
     }
 }
 
 /// Size the cursor renders at on this output.
-fn cursor_capture_size(niri: &Niri, output: &Output) -> Size<i32, BufferCoords> {
+pub fn cursor_capture_size(niri: &Niri, output: &Output) -> Size<i32, BufferCoords> {
     let int_scale = output.current_scale().integer_scale();
     let scale = Scale::from(output.current_scale().fractional_scale());
 
@@ -353,8 +366,10 @@ impl ImageCopyCaptureHandler for State {
         let damage_tracker = OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
         let session_id = source_session_id(&session.source());
         let credentials = session_credentials(&self.niri.display_handle, session.client());
+        let constraints_size = session.current_constraints().map(|c| c.size);
         self.niri.image_copy_sessions.push(ImageCopySession {
             session,
+            constraints_size,
             damage_tracker,
             texture: CaptureTexture::default(),
             pending_frame: None,
@@ -369,10 +384,12 @@ impl ImageCopyCaptureHandler for State {
         let damage_tracker = OutputDamageTracker::new((0, 0), 1.0, Transform::Normal);
         let session_id = source_session_id(&session.source());
         let credentials = session_credentials(&self.niri.display_handle, session.client());
+        let constraints_size = session.current_constraints().map(|c| c.size);
         self.niri
             .image_copy_cursor_sessions
             .push(ImageCopyCursorSession {
                 session,
+                constraints_size,
                 damage_tracker,
                 texture: CaptureTexture::default(),
                 pending_frame: None,
