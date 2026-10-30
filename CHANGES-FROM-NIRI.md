@@ -103,7 +103,8 @@ A crash of the compositor ends the whole session.
     The smithay fork clamps negative parent sizes to 0 ([#122](https://github.com/Deliveos/nori/pull/122); fixes [#104](https://github.com/Deliveos/nori/issues/104)).
 
 Most crash fixes from the older work (output positions, workspaces, the window switcher click, clipboard writer threads) come with client-server regression tests in `src/tests/crash_regressions.rs`, which niri doesn't have ([4a000d50](https://github.com/Deliveos/nori/commit/4a000d504c9ab0fd8b7c731a004a90a68b353dd7)); the spring fix has unit tests, the hotkey overlay fix has only a unit test of its precondition (it doesn't call `render()`), and the `stop-cast` and custom mode fixes have none.
-Later crash fixes added their own cases to that file, except the DisplayConfig scale fix, whose test is a unit test in `src/dbus/mutter_display_config.rs`.
+Of the later crash fixes above, the IPC request limit and both `xdg_positioner` fixes have cases in that file, and the DisplayConfig scale fix has a unit test in `src/dbus/mutter_display_config.rs`.
+Entries added after these say in the entry itself where their test is, or that there is none.
 
 ## Freeze and hang fixes
 
