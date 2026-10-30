@@ -637,12 +637,7 @@ impl PipeWire {
                             Fourcc::Xrgb8888
                         };
 
-                        let max_frame_rate = format.max_framerate();
-                        let min_frame_time = Duration::from_micros(
-                            1_000_000 * u64::from(max_frame_rate.denom)
-                                / u64::from(max_frame_rate.num),
-                        );
-                        inner.min_time_between_frames = min_frame_time;
+                        inner.min_time_between_frames = min_frame_time(format.max_framerate());
 
                         // We have following cases when param_changed:
                         //
@@ -1962,6 +1957,21 @@ enum SharingBuf {
     Shm(ShmLayout),
 }
 
+/// Returns the minimum time between frames for the negotiated max framerate.
+///
+/// The consumer picks this value. SPA compares fractions by cross-multiplying, so 0/0 counts as
+/// equal to both ends of the range that we offer. A zero numerator means no limit here, instead of
+/// a division by zero, which would abort niri inside the PipeWire callback.
+fn min_frame_time(max_frame_rate: Fraction) -> Duration {
+    if max_frame_rate.num == 0 {
+        return Duration::ZERO;
+    }
+
+    Duration::from_micros(
+        1_000_000 * u64::from(max_frame_rate.denom) / u64::from(max_frame_rate.num),
+    )
+}
+
 /// Returns the time to pace the next cast frame from, after a frame recorded at `recorded`.
 fn paced_frame_time(
     last: Duration,
@@ -2283,6 +2293,24 @@ mod tests {
         // Bogus future values don't make a young age.
         assert_eq!(trackers.buffer_age(Some(15), 15), 0);
         assert_eq!(trackers.buffer_age(Some(20), 15), 0);
+    }
+
+    #[test]
+    fn min_frame_time_without_a_framerate() {
+        let frac = |num, denom| Fraction { num, denom };
+
+        assert_eq!(min_frame_time(frac(0, 0)), Duration::ZERO);
+        assert_eq!(min_frame_time(frac(0, 1)), Duration::ZERO);
+        assert_eq!(min_frame_time(frac(1, 0)), Duration::ZERO);
+        assert_eq!(min_frame_time(frac(60, 1)), Duration::from_micros(16_666));
+        assert_eq!(
+            min_frame_time(frac(59_940, 1000)),
+            Duration::from_micros(16_683)
+        );
+        assert_eq!(
+            min_frame_time(frac(1, u32::MAX)),
+            Duration::from_micros(1_000_000 * u64::from(u32::MAX))
+        );
     }
 
     #[test]
