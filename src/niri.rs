@@ -2727,10 +2727,11 @@ impl Niri {
         let xdg_foreign_state = XdgForeignState::new::<State>(&display_handle);
 
         let is_tty = matches!(backend, Backend::Tty(_));
-        let gamma_control_manager_state =
-            GammaControlManagerState::new::<State, _>(&display_handle, move |client| {
-                is_tty && !client.get_data::<ClientState>().unwrap().restricted
-            });
+        let gamma_control_manager_state = GammaControlManagerState::new::<State, _>(
+            &display_handle,
+            &event_loop,
+            move |client| is_tty && !client.get_data::<ClientState>().unwrap().restricted,
+        );
         let activation_state = XdgActivationState::new::<State>(&display_handle);
         event_loop
             .insert_source(

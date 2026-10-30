@@ -37,6 +37,7 @@ Pull requests that change how nori behaves compared with niri update this file i
     - an IPC request line may be at most 8 MiB ([details](#ipc-request-limit));
     - at most 16 pastes of nori's own clipboard data (such as a copied screenshot) can be pending at once ([details](#clipboard-writer-threads));
     - a blur region with more than 64 rectangles is blurred over its bounding box ([details](#blur-region-cap));
+    - at most 16 wlr-gamma-control ramps can be read at once ([details](#gamma-reads));
     - configured output positions are clamped to ±16777216, and custom modes with zero timings are ignored ([details](#output-positions-and-custom-modes));
     - DisplayConfig rejects scales that are not finite and positive ([details](#displayconfig-scale));
     - at most 4 screenshots can be saved at once ([details](#screenshot-threads));
@@ -175,6 +176,12 @@ The spawn fix is about a background thread that never finished.
 - **Gamma ramps from a pipe.**
     For wlr-gamma-control `set_gamma`, niri reads the ramps from the client's file descriptor on the main thread, so a client that passes a pipe and never writes to it freezes the compositor, including input and VT switching.
     nori reads with `pread`, which fails on pipes instead of blocking, so that request fails and nori logs "failed to read gamma data" ([f40ced8b](https://github.com/Deliveos/nori/commit/f40ced8b4e2cb176042d94867049b7d25239867a); fixes [#8](https://github.com/Deliveos/nori/issues/8)).
+- <a id="gamma-reads"></a>**Gamma ramps from a slow file.**
+    In niri, and in nori before this fix, the read runs on the main thread with no time limit; `pread` fails on pipes, but waits on a regular file on a FUSE or stalled network file system, so a client that passes such a file freezes the compositor.
+    nori reads each ramp on a thread, which also closes the file, and applies the ramp on the main thread when the read finishes.
+    A gamma control has at most one read in progress: a `set_gamma` that comes in meanwhile is read after it instead of any earlier one that waits, and replaces the finished read's ramp.
+    At most 16 reads can be in progress at once, counting reads of gamma controls that were destroyed meanwhile; a `set_gamma` beyond that fails its gamma control, like a failed read.
+    Unit tests in `src/protocols/gamma_control.rs` cover reading the ramp; reading on a thread has no test ([#252](https://github.com/Deliveos/nori/pull/252); fixes [#156](https://github.com/Deliveos/nori/issues/156)).
 - **Stopping a screencast.**
     When a cast ends from the compositor's side (its window or output goes away, PipeWire fails, or the user stops it), niri runs the D-Bus `Session.Stop` code with `block_on` on the main thread, which waits for the session's interface lock (held by a running `RecordMonitor` or `RecordWindow` call on that session) and for messages to the bus, and panics if sending the `Closed` signal or removing the D-Bus objects fails.
     nori runs it on a thread and logs these errors instead ([#221](https://github.com/Deliveos/nori/pull/221); fixes [#161](https://github.com/Deliveos/nori/issues/161)).
