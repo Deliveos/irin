@@ -234,6 +234,12 @@ The spawn fix is about a background thread that never finished.
 
 ### Outputs
 
+- **Monitors whose EDID arrives late.**
+    Some devices, notably USB-C docks with DP-MST or alt-mode, report a connector as connected before its EDID was read, and as changed later; niri names the output when the connector is connected and ignores the change, so the output has no make, model and serial, and `output` config sections and IPC requests that use them don't match it.
+    nori takes the new name on the change while there is no output for the connector yet and the new name has a make, model or serial that differs from the known name, with the same check for duplicate make/model/serial as for new connectors.
+    A change whose EDID read failed keeps the known make, model and serial, so an `off` section that uses them keeps matching.
+    The connector gets a new id with the new name, so wlr-output-management clients get a new head with the new make, model and serial.
+    An output created before the EDID was read (from fallback modes, a custom mode or a modeline) still keeps its name without make, model and serial ([#232](https://github.com/Deliveos/nori/pull/232); fixes [#167](https://github.com/Deliveos/nori/issues/167)).
 - **wlr-output-management keeps config for other outputs.**
     niri replaces the whole outputs config with the heads in a wlr-output-management request, which only covers connected outputs, so settings for unplugged monitors are lost until the output sections of the config file change (a reload with unchanged output sections keeps the applied config).
     nori replaces only the entries with the same name, in place, and keeps the order of the other entries, so a change from wlr-randr, kanshi and similar tools also takes effect when several config entries match one output ([32a109dc](https://github.com/Deliveos/nori/commit/32a109dc0c3a02c5e4620a2f8b98f9cde3f8b187), [#86](https://github.com/Deliveos/nori/pull/86); fixes [#21](https://github.com/Deliveos/nori/issues/21), [#81](https://github.com/Deliveos/nori/issues/81)).
