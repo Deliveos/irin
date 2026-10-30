@@ -504,9 +504,7 @@ impl CompositorHandler for State {
             }
         }
 
-        self.niri
-            .root_surface
-            .retain(|k, v| k != surface && v != surface);
+        self.niri.root_surface.remove(surface);
 
         // The object destruction order is not guaranteed to follow the logical role order. So for
         // example when a client disconnects unexpectedly, WlSurface::destroyed() may be called

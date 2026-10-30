@@ -188,6 +188,7 @@ use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRende
 use crate::utils::listening_socket::{insert_listening_socket, OnAcceptError};
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
+use crate::utils::surface_roots::SurfaceRoots;
 use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
@@ -280,7 +281,7 @@ pub struct Niri {
 
     // Cached root surface for every surface, so that we can access it in destroyed() where the
     // normal get_parent() is cleared out.
-    pub root_surface: HashMap<WlSurface, WlSurface>,
+    pub root_surface: SurfaceRoots<WlSurface>,
 
     // Dmabuf readiness pre-commit hook for a surface.
     pub dmabuf_pre_commit_hook: HashMap<WlSurface, HookId>,
@@ -2912,7 +2913,7 @@ impl Niri {
             unmapped_layer_surfaces: HashSet::new(),
             refused_role_objects: Vec::new(),
             mapped_layer_surfaces: HashMap::new(),
-            root_surface: HashMap::new(),
+            root_surface: SurfaceRoots::new(),
             dmabuf_pre_commit_hook: HashMap::new(),
             blocker_cleared_tx,
             blocker_cleared_rx,
