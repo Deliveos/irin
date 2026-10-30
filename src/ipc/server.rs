@@ -454,7 +454,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             Response::PickedColor(color)
         }
         Request::Action(action) => {
-            validate_action(&action)?;
+            validate_action(&action).await?;
 
             let (tx, rx) = async_channel::bounded(1);
 
@@ -535,7 +535,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
     Ok(response)
 }
 
-fn validate_action(action: &Action) -> Result<(), String> {
+async fn validate_action(action: &Action) -> Result<(), String> {
     if let Action::Screenshot { path, .. }
     | Action::ScreenshotScreen { path, .. }
     | Action::ScreenshotWindow { path, .. }
@@ -551,13 +551,29 @@ fn validate_action(action: &Action) -> Result<(), String> {
     }
 
     if let Action::LoadConfigFile { path: Some(path) } = action {
-        let p = Path::new(path);
-        if !p.is_file() {
+        if !is_file_on_thread(path).await? {
             return Err(format!("path does not point to a file: {path}"));
         }
     }
 
     Ok(())
+}
+
+/// Checks whether the path is a file on a thread, since `stat` can block for a long time, for
+/// example on a stalled network mount.
+async fn is_file_on_thread(path: &str) -> Result<bool, String> {
+    let (tx, rx) = async_channel::bounded(1);
+    let path = PathBuf::from(path);
+    std::thread::Builder::new()
+        .name("IPC Path Check".to_owned())
+        .spawn(move || {
+            let _ = tx.send_blocking(path.is_file());
+        })
+        .map_err(|err| format!("error spawning a thread to check the path: {err}"))?;
+
+    rx.recv()
+        .await
+        .map_err(|_| String::from("error checking the path"))
 }
 
 async fn handle_event_stream_client(client: EventStreamClient) -> anyhow::Result<()> {

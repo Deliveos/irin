@@ -71,6 +71,60 @@ fn ipc_tracks_opened_and_closed_windows() {
 }
 
 #[test]
+fn load_config_file_checks_the_path() {
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use niri_ipc::socket::Socket;
+    use niri_ipc::{Action, Request, Response};
+
+    let mut f = Fixture::new();
+    let dir = std::env::temp_dir().join(format!("niri-test-ipc-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("config.kdl");
+    std::fs::write(&file, "").unwrap();
+    let path = dir.join("socket");
+    let listener = UnixListener::bind(&path).unwrap();
+
+    let send = |f: &mut Fixture, config_path: &std::path::Path| {
+        let request = Request::Action(Action::LoadConfigFile {
+            path: Some(config_path.to_str().unwrap().to_owned()),
+        });
+        let (tx, rx) = mpsc::channel();
+        let socket_path = path.clone();
+        std::thread::spawn(move || {
+            let reply = Socket::connect_to(&socket_path).and_then(|mut s| s.send(request));
+            let _ = tx.send(reply);
+        });
+        let (server, _) = listener.accept().unwrap();
+        crate::ipc::server::on_new_ipc_client(f.niri_state(), server);
+
+        // The check runs on a thread, so keep dispatching until the reply comes.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            f.dispatch();
+            if let Ok(reply) = rx.recv_timeout(Duration::from_millis(1)) {
+                return reply.unwrap();
+            }
+            assert!(Instant::now() < deadline, "no reply from niri");
+        }
+    };
+
+    let missing = dir.join("missing.kdl");
+    let err = send(&mut f, &missing).unwrap_err();
+    assert!(err.starts_with("path does not point to a file"), "{err}");
+
+    let err = send(&mut f, &dir).unwrap_err();
+    assert!(err.starts_with("path does not point to a file"), "{err}");
+
+    let reply = send(&mut f, &file).unwrap();
+    assert!(matches!(reply, Response::Handled), "{reply:?}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn socket_gets_reply_to_oversized_request() {
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc;
