@@ -137,6 +137,59 @@ fn current_mode_is_sent_when_a_custom_mode_is_added() {
     assert_eq!(current, (true, Some((1920, 1080, 144_000))));
 }
 
+/// Returns the width, height, refresh rate and preferred flag of the client's modes, sorted.
+fn client_modes(f: &mut Fixture, id: ClientId) -> Vec<(i32, i32, i32, bool)> {
+    let state = &f.client(id).state;
+    let mut modes: Vec<_> = state
+        .output_modes
+        .values()
+        .map(|mode| (mode.size.0, mode.size.1, mode.refresh, mode.preferred))
+        .collect();
+    modes.sort();
+    modes
+}
+
+#[test]
+fn preferred_mode_stays_preferred_when_a_custom_mode_is_added() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let preferred = niri_ipc::Mode {
+        is_preferred: true,
+        ..mode(1920, 1080, 60_000)
+    };
+    let modes = vec![preferred, mode(1920, 1080, 144_000)];
+    set_ipc_modes(&mut f, modes.clone(), Some(1));
+
+    let id = f.add_client();
+    f.roundtrip(id);
+    let expected = [(1920, 1080, 60_000, true), (1920, 1080, 144_000, false)];
+    assert_eq!(client_modes(&mut f, id), expected);
+
+    // Switching to a custom mode inserts it at index 0, so the other modes move one place over.
+    let custom = vec![
+        mode(1280, 720, 50_000),
+        preferred,
+        mode(1920, 1080, 144_000),
+    ];
+    set_ipc_modes(&mut f, custom, Some(0));
+    f.roundtrip(id);
+    let with_custom = [
+        (1280, 720, 50_000, false),
+        (1920, 1080, 60_000, true),
+        (1920, 1080, 144_000, false),
+    ];
+    assert_eq!(client_modes(&mut f, id), with_custom);
+    let current = client_current_mode(&mut f, id);
+    assert_eq!(current, (true, Some((1280, 720, 50_000))));
+
+    // And switching back removes it again.
+    set_ipc_modes(&mut f, modes, Some(1));
+    f.roundtrip(id);
+    assert_eq!(client_modes(&mut f, id), expected);
+    let current = client_current_mode(&mut f, id);
+    assert_eq!(current, (true, Some((1920, 1080, 144_000))));
+}
+
 #[test]
 fn enabling_an_output_with_a_custom_mode_is_sent() {
     let mut f = Fixture::new();

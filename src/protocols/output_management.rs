@@ -1,6 +1,5 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::iter::zip;
 use std::mem;
 
 use niri_config::{FloatOrInt, OutputName, Vrr};
@@ -119,48 +118,37 @@ impl OutputManagementManagerState {
                 }
 
                 // Winit and virtual outputs can change modes; on a TTY custom modes can add/remove
-                // a mode.
+                // a mode, which moves the other modes in the list. A mode object can't lose the
+                // preferred flag, so replace all mode objects of the head.
                 let modes_changed = old.modes != conf.modes;
                 if modes_changed {
                     changed = true;
                     for client in self.clients.values_mut() {
                         if let Some((head, modes)) = client.heads.get_mut(output) {
-                            // Ends on the shortest iterator.
-                            let zwlr_modes_with_modes = zip(modes.iter(), &conf.modes);
-                            let least_modes_len = zwlr_modes_with_modes.len();
-
-                            for (wl_mode, mode) in zwlr_modes_with_modes {
-                                wl_mode.size(i32::from(mode.width), i32::from(mode.height));
-                                if let Ok(refresh_rate) = mode.refresh_rate.try_into() {
-                                    wl_mode.refresh(refresh_rate);
-                                }
+                            for mode in modes.drain(..) {
+                                mode.finished();
                             }
 
-                            if let Some(client) = client.manager.client() {
-                                if conf.modes.len() > least_modes_len {
-                                    for mode in &conf.modes[least_modes_len..] {
-                                        // One or more modes were added.
-                                        let new_mode = client
-                                            .create_resource::<ZwlrOutputModeV1, _, State>(
-                                                &self.display,
-                                                head.version(),
-                                                EmptyData,
-                                            )
-                                            .unwrap();
-                                        head.mode(&new_mode);
-                                        new_mode
-                                            .size(i32::from(mode.width), i32::from(mode.height));
-                                        if let Ok(refresh_rate) = mode.refresh_rate.try_into() {
-                                            new_mode.refresh(refresh_rate)
-                                        }
-                                        modes.push(new_mode);
-                                    }
-                                } else if modes.len() > least_modes_len {
-                                    // One or more modes were removed.
-                                    for mode in modes.drain(least_modes_len..) {
-                                        mode.finished();
-                                    }
+                            let Some(client) = client.manager.client() else {
+                                continue;
+                            };
+                            for mode in &conf.modes {
+                                let new_mode = client
+                                    .create_resource::<ZwlrOutputModeV1, _, State>(
+                                        &self.display,
+                                        head.version(),
+                                        EmptyData,
+                                    )
+                                    .unwrap();
+                                head.mode(&new_mode);
+                                new_mode.size(i32::from(mode.width), i32::from(mode.height));
+                                if mode.is_preferred {
+                                    new_mode.preferred();
                                 }
+                                if let Ok(refresh_rate) = mode.refresh_rate.try_into() {
+                                    new_mode.refresh(refresh_rate);
+                                }
+                                modes.push(new_mode);
                             }
                         }
                     }
