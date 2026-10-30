@@ -39,6 +39,7 @@ Pull requests that change how nori behaves compared with niri update this file i
     - a blur region with more than 64 rectangles is blurred over its bounding box ([details](#blur-region-cap));
     - at most 16 wlr-gamma-control ramps can be read at once ([details](#gamma-reads));
     - configured output positions are clamped to ±16777216, and custom modes with zero timings are ignored ([details](#output-positions-and-custom-modes));
+    - a window screencast covers at most an area the size of the window's output (rounded up to whole logical pixels, then out to whole physical pixels, so on each axis it can be larger than the output by fewer than the scale plus 2 physical pixels), also when the window itself is larger, and whatever lies outside that area is not cast ([details](#window-cast-size));
     - DisplayConfig rejects scales that are not finite and positive ([details](#displayconfig-scale));
     - at most 4 screenshots can be saved at once ([details](#screenshot-threads));
     - the xwayland-satellite on-demand test must finish within 2 seconds, or the integration stays off until a config reload changes the `xwayland-satellite` section, or a restart ([details](#xwayland-satellite-test)).
@@ -506,6 +507,13 @@ niri does some bookkeeping on every iteration of its event loop, even when nothi
     niri offers PipeWire consumers 8 buffers by default, each a whole frame, about 265 MB per 4K stream.
     nori offers 4 by default and still allows 2–16 for consumers that ask; the default is not configurable.
     Consumers without a preference of their own, such as OBS, get 4 ([#106](https://github.com/Deliveos/nori/pull/106); fixes [#33](https://github.com/Deliveos/nori/issues/33)).
+- <a id="window-cast-size"></a>**Window screencast size.**
+    niri sizes a window screencast to the bounding box of the window's surfaces and popups, with no limit, so a client that puts a small subsurface far from its window makes every stream buffer that large: with one 16000 px away on both axes, 16000 × 16000 × 4 B ≈ 1 GB per buffer, and every frame is rendered at that size.
+    nori crops the cast area on each axis to at most the logical size of the output the window is on, rounded up to whole logical pixels.
+    The area keeps the window geometry and splits the room left between both sides; on an axis where the window geometry itself is larger than the output, the area is the start (left or top part) of the window geometry.
+    Anything outside the area is not cast: client-drawn shadows, subsurfaces, popups, and the rest of a window that is larger than its output.
+    A window that doesn't set its geometry has the bounding box of its surface and subsurfaces as its geometry, so a far-away subsurface makes that geometry larger than the output, and the cast shows the start of it.
+    The tests are `window_cast_area_is_cropped_around_the_window` and `window_cast_area_is_cropped_without_window_geometry` in `src/tests/window_cast.rs`, and `crop_axis_keeps_the_window_and_splits_the_rest` in `src/window/mapped.rs` ([#253](https://github.com/Deliveos/nori/pull/253); fixes [#165](https://github.com/Deliveos/nori/issues/165)).
 - **Hotkey overlay textures.**
     niri keeps the hotkey overlay's texture for each output after the overlay is closed, and the overlay is shown at startup by default; the issue estimates about 10 MB per output at scale 2.
     nori frees them when the overlay is hidden ([96708679](https://github.com/Deliveos/nori/commit/96708679522003d8d4eb443169e64cd147617647); fixes [#42](https://github.com/Deliveos/nori/issues/42)).
