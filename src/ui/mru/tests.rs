@@ -1,5 +1,6 @@
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
+use smithay::output::{Mode, PhysicalProperties, Subpixel};
 
 use super::*;
 
@@ -35,6 +36,62 @@ fn remove_last_window_out_of_two() {
     };
 
     check_ops(&mut mru, &ops);
+}
+
+#[test]
+fn removing_hidden_thumbnail_moves_nothing() {
+    let output = Output::new(
+        String::from("output"),
+        PhysicalProperties {
+            size: Size::from((1280, 720)),
+            subpixel: Subpixel::Unknown,
+            make: String::new(),
+            model: String::new(),
+            serial_number: String::new(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode {
+            size: Size::from((1280, 720)),
+            refresh: 60000,
+        }),
+        None,
+        None,
+        None,
+    );
+
+    // Four thumbnails, the second one on another workspace.
+    let mut thumbnails: Vec<_> = (0..4).map(|_| create_thumbnail()).collect();
+    for (i, thumbnail) in thumbnails.iter_mut().enumerate() {
+        thumbnail.on_current_workspace = i != 1;
+    }
+    let ids: Vec<_> = thumbnails.iter().map(|t| t.id).collect();
+    let wmru = WindowMru {
+        thumbnails,
+        current_id: Some(ids[0]),
+        scope: MruScope::Workspace,
+        app_id_filter: None,
+    };
+
+    let mut ui = WindowMruUi::new(Rc::new(RefCell::new(Config::default())));
+    ui.open(Clock::with_time(Duration::ZERO), wmru, output);
+    let moving = |ui: &WindowMruUi| {
+        let UiState::Open(inner) = &ui.state else {
+            panic!("the window switcher should be open");
+        };
+        let thumbnails = &inner.wmru.thumbnails;
+        thumbnails
+            .iter()
+            .filter(|t| t.move_animation.is_some())
+            .count()
+    };
+
+    ui.remove_window(ids[1]);
+    assert_eq!(moving(&ui), 0);
+
+    // Removing a visible thumbnail moves the one right of it.
+    ui.remove_window(ids[2]);
+    assert_eq!(moving(&ui), 1);
 }
 
 fn arbitrary_scope() -> impl Strategy<Value = MruScope> {

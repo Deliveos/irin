@@ -1365,6 +1365,10 @@ impl Inner {
     fn remove_window(&mut self, id: MappedId) -> Option<Thumbnail> {
         let idx = self.wmru.idx_of(id)?;
 
+        // A thumbnail hidden by the scope or the app id filter takes no space, so nothing moves.
+        let filter = self.wmru.app_id_filter.as_deref();
+        let visible = matches(self.wmru.scope, filter, &self.wmru.thumbnails[idx]);
+
         let last_visible = self.wmru.thumbnails().next_back();
         let removing_last_visible = last_visible.is_some_and(|t| t.id == id);
 
@@ -1372,7 +1376,7 @@ impl Inner {
         // - If it's not currently selected, then it can't cause changes to view position.
         // - If it's currently selected, then the first step in removal (focusing the next window)
         //   will wrap back to the start, and no animations should happen.
-        if !removing_last_visible {
+        if visible && !removing_last_visible {
             let output_size = output_size(&self.output);
             let scale = self.output.current_scale().fractional_scale();
             let round = move |logical: f64| round_logical_in_physical(scale, logical);
