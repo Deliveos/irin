@@ -3539,6 +3539,35 @@ fn preset_column_width_fixed_correct_with_border() {
 }
 
 #[test]
+fn default_column_width_proportion_is_clamped() {
+    let mut layout = check_ops([Op::AddOutput(0)]);
+    layout.add_window(
+        TestWindow::new(TestWindowParams::new(0)),
+        AddWindowTarget::Auto,
+        Some(PresetSize::Proportion(20000.)),
+        None,
+        false,
+        false,
+        ActivateWindow::default(),
+    );
+    layout.verify_invariants();
+    let win = layout.windows().next().unwrap().1;
+    let width = win.requested_size().unwrap().w;
+
+    // The same width as set-column-width with a proportion above the limit.
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams::new(0),
+        },
+        Op::SetColumnWidth(SizeChange::SetProportion(2_000_000.)),
+    ];
+    let layout = check_ops(ops);
+    let win = layout.windows().next().unwrap().1;
+    assert_eq!(win.requested_size().unwrap().w, width);
+}
+
+#[test]
 fn preset_column_width_reset_after_set_width() {
     let ops = [
         Op::AddOutput(0),

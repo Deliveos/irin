@@ -931,7 +931,8 @@ impl<W: LayoutElement> Workspace<W> {
 
                 ColumnWidth::Fixed(fixed)
             }
-            PresetSize::Proportion(prop) => ColumnWidth::Proportion(prop),
+            // Clamps the proportion, like for preset widths.
+            PresetSize::Proportion(_) => ColumnWidth::from(width),
         }
     }
 
