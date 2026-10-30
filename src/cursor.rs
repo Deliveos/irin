@@ -4,6 +4,7 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context};
 use smithay::backend::allocator::Fourcc;
@@ -118,14 +119,40 @@ impl CursorManager {
         }
     }
 
-    pub fn is_current_cursor_animated(&self, scale: i32) -> bool {
+    /// Puts an animated cursor with 1×1 frames of the given delays into the cache.
+    #[cfg(test)]
+    pub fn insert_animated_cursor(&self, icon: CursorIcon, scale: i32, delays: &[u32]) {
+        let images = delays
+            .iter()
+            .map(|&delay| Image {
+                size: 24,
+                width: 1,
+                height: 1,
+                xhot: 0,
+                yhot: 0,
+                delay,
+                pixels_rgba: vec![0; 4],
+                pixels_argb: vec![0; 4],
+            })
+            .collect();
+        let cursor = XCursor::from_images(images, 24).unwrap();
+        let mut cache = self.named_cursor_cache.borrow_mut();
+        cache.insert((icon, scale), Some(Rc::new(cursor)));
+    }
+
+    /// Returns how long until the current cursor shows its next animation frame.
+    ///
+    /// `millis` is the animation time, as passed to [`XCursor::frame`]. Returns `None` when the
+    /// current cursor has no Xcursor animation: when it's hidden, a client's surface, or a named
+    /// cursor whose image never changes (see [`XCursor::time_to_next_frame`]).
+    pub fn time_to_next_cursor_frame(&self, scale: i32, millis: u32) -> Option<Duration> {
         match &self.current_cursor {
-            CursorImageStatus::Hidden => false,
-            CursorImageStatus::Surface(_) => false,
+            CursorImageStatus::Hidden => None,
+            CursorImageStatus::Surface(_) => None,
             CursorImageStatus::Named(icon) => self
                 .get_cursor_with_name(*icon, scale)
                 .unwrap_or_else(|| self.get_default_cursor(scale))
-                .is_animated_cursor(),
+                .time_to_next_frame(millis),
         }
     }
 
@@ -408,9 +435,26 @@ impl XCursor {
         &self.images
     }
 
-    /// Check whether the cursor is animated.
-    pub fn is_animated_cursor(&self) -> bool {
-        self.images.len() > 1
+    /// Returns how long the frame that [`XCursor::frame`] shows at `millis` stays.
+    ///
+    /// Returns `None` when fewer than two frames have a non-zero delay, because the image then
+    /// never changes: `frame()` skips frames with a zero delay, and always shows the first frame
+    /// when every delay is zero.
+    pub fn time_to_next_frame(&self, millis: u32) -> Option<Duration> {
+        if self.images.iter().filter(|image| image.delay > 0).count() < 2 {
+            return None;
+        }
+
+        let mut millis = millis % self.animation_duration;
+        for image in &self.images {
+            if millis < image.delay {
+                return Some(Duration::from_millis(u64::from(image.delay - millis)));
+            }
+            millis -= image.delay;
+        }
+
+        // Not reached: the delays add up to at least animation_duration.
+        None
     }
 
     /// Get hotspot for the given `image`.
@@ -528,6 +572,31 @@ mod tests {
         assert_eq!(cursor.animation_duration, u32::MAX);
         assert_eq!(cursor.frame(0).0, 0);
         assert_eq!(cursor.frame(u32::MAX).0, 0);
+    }
+
+    #[test]
+    fn time_to_next_frame() {
+        let images = vec![image(24, 30), image(24, 50), image(24, 20)];
+        let cursor = XCursor::from_images(images, 24).unwrap();
+        let ms = |ms| Some(Duration::from_millis(ms));
+        assert_eq!(cursor.time_to_next_frame(0), ms(30));
+        assert_eq!(cursor.time_to_next_frame(29), ms(1));
+        assert_eq!(cursor.time_to_next_frame(30), ms(50));
+        assert_eq!(cursor.time_to_next_frame(95), ms(5));
+        // The animation wraps after 100 ms.
+        assert_eq!(cursor.time_to_next_frame(110), ms(20));
+
+        // A frame with a zero delay is never shown, so it's skipped.
+        let images = vec![image(24, 30), image(24, 0), image(24, 20)];
+        let cursor = XCursor::from_images(images, 24).unwrap();
+        assert_eq!(cursor.time_to_next_frame(30), ms(20));
+
+        // With fewer than two frames that have a non-zero delay, the image never changes.
+        for delays in [&[30][..], &[0, 0], &[30, 0], &[0, 30]] {
+            let images = delays.iter().map(|&delay| image(24, delay)).collect();
+            let cursor = XCursor::from_images(images, 24).unwrap();
+            assert_eq!(cursor.time_to_next_frame(10), None, "delays {delays:?}");
+        }
     }
 
     #[test]

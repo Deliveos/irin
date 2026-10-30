@@ -1,3 +1,7 @@
+use std::thread::sleep;
+use std::time::Duration;
+
+use smithay::input::pointer::CursorIcon;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point};
 
@@ -167,4 +171,40 @@ fn ending_spatial_movement_grab_redraws_cursor_output() {
     }
     pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), InputTime::now());
     assert_eq!(queued(&state.niri, &outputs), [false, true]);
+}
+
+#[test]
+fn animated_cursor_redraws_when_its_frame_changes() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let output = f.niri_output(1);
+
+    // The default cursor, with two frames of 20 ms each.
+    let niri = f.niri();
+    niri.cursor_manager
+        .insert_animated_cursor(CursorIcon::Default, 1, &[20, 20]);
+    let geo = niri.global_space.output_geometry(&output).unwrap().to_f64();
+    move_pointer(niri, geo.loc + geo.size.downscale(2.).to_point());
+    f.state.server.dispatch();
+
+    // The output isn't redrawn on every refresh cycle, but when the next frame is due.
+    let state = &f.niri().output_state[&output];
+    assert!(!state.unfinished_animations_remain);
+    assert!(state.cursor_frame_timer.is_some());
+    let sequence = state.frame_callback_sequence;
+
+    sleep(Duration::from_millis(30));
+    f.state.server.dispatch();
+    let state = &f.niri().output_state[&output];
+    assert_ne!(state.frame_callback_sequence, sequence);
+    assert!(state.cursor_frame_timer.is_some());
+
+    // A skipped render that queues no vblank doesn't arm the timer again, so the output doesn't
+    // keep redrawing. The headless backend never skips a render, so skip it by turning the
+    // monitors off. (A render skipped after an error rendering or queueing the frame arms it, but
+    // only the TTY backend has those errors.)
+    f.niri().monitors_active = false;
+    sleep(Duration::from_millis(30));
+    f.state.server.dispatch();
+    assert!(f.niri().output_state[&output].cursor_frame_timer.is_none());
 }
