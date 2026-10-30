@@ -478,13 +478,14 @@ impl RenderElement<GlesRenderer> for ShaderRenderElement {
                     gl.VertexAttribDivisor(program.attrib_vert_position as u32, 1);
                     gl.DrawArraysInstanced(ffi::TRIANGLE_STRIP, 0, 4, damage_len);
                 } else {
-                    // When we have more than 10 rectangles, draw them in batches of 10.
+                    // When we have more than 10 rectangles, draw them in batches of 10, with 6
+                    // vertices per rectangle.
                     for i in 0..(damage_len - 1) / 10 {
-                        gl.DrawArrays(ffi::TRIANGLES, 0, 6);
+                        gl.DrawArrays(ffi::TRIANGLES, 0, 60);
 
-                        // Set damage pointer to the next 10 rectangles.
+                        // Set damage pointer to the next 10 rectangles, at 4 floats per vertex.
                         let offset =
-                            (i + 1) as usize * 6 * 4 * std::mem::size_of::<ffi::types::GLfloat>();
+                            (i + 1) as usize * 60 * 4 * std::mem::size_of::<ffi::types::GLfloat>();
                         gl.VertexAttribPointer(
                             program.attrib_vert_position as u32,
                             4,
@@ -545,5 +546,87 @@ impl<'render> RenderElement<TtyRenderer<'render>> for ShaderRenderElement {
         // If scanout for things other than Wayland buffers is implemented, this will need to take
         // the target GPU into account.
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::egl::native::EGLSurfacelessDisplay;
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+    use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Renderer};
+    use smithay::utils::Transform;
+
+    use super::*;
+    use crate::render_helpers::{copy_framebuffer, create_texture, resources, shaders};
+
+    #[test]
+    fn egl_draws_every_damage_rectangle_without_instancing() {
+        let mut renderer = unsafe {
+            let display = EGLDisplay::new(EGLSurfacelessDisplay).unwrap();
+            let context = EGLContext::new(&display).unwrap();
+            let capabilities = GlesRenderer::supported_capabilities(&context)
+                .unwrap()
+                .into_iter()
+                .filter(|cap| *cap != Capability::Instancing);
+            GlesRenderer::with_capabilities(context, capabilities).unwrap()
+        };
+        assert!(!renderer.capabilities().contains(&Capability::Instancing));
+
+        resources::init(&mut renderer);
+        shaders::init(&mut renderer);
+        shaders::set_custom_open_program(
+            &mut renderer,
+            Some("vec4 open_color(vec3 coords_geo, vec3 size_geo) { return vec4(1.0); }"),
+        );
+        assert!(Shaders::get(&mut renderer)
+            .program(ProgramType::Open)
+            .is_some());
+
+        // 25 rectangles of one pixel: two full batches of 10 and 5 more.
+        let size = Size::<i32, Physical>::from((25, 1));
+        let damage: Vec<Rectangle<i32, Physical>> = (0..25)
+            .map(|x| Rectangle::new(Point::from((x, 0)), Size::from((1, 1))))
+            .collect();
+        let elem = ShaderRenderElement::new(
+            ProgramType::Open,
+            Size::from((25., 1.)),
+            None,
+            1.,
+            1.,
+            Rc::new([]),
+            HashMap::new(),
+            Kind::Unspecified,
+        );
+
+        let mut texture = create_texture(&mut renderer, size, Fourcc::Abgr8888).unwrap();
+        let mut target = renderer.bind(&mut texture).unwrap();
+        {
+            let mut frame = renderer
+                .render(&mut target, size, Transform::Normal)
+                .unwrap();
+            frame
+                .clear(Color32F::TRANSPARENT, &[Rectangle::from_size(size)])
+                .unwrap();
+            RenderElement::<GlesRenderer>::draw(
+                &elem,
+                &mut frame,
+                elem.src(),
+                Rectangle::from_size(size),
+                &damage,
+                &[],
+                None,
+            )
+            .unwrap();
+            let _sync = frame.finish().unwrap();
+        }
+
+        let mapping = copy_framebuffer(&mut renderer, &target, Fourcc::Abgr8888).unwrap();
+        // The target holds a lock on the texture. Drop it before the asserts, so that a failing
+        // assert doesn't poison the lock and panic again when the texture is dropped.
+        drop(target);
+        let bytes = renderer.map_texture(&mapping).unwrap();
+        assert_eq!(bytes.len(), 25 * 4);
+        assert!(bytes.iter().all(|&b| b == 255), "{bytes:?}");
     }
 }

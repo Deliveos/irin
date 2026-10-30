@@ -366,6 +366,13 @@ The spawn fix is about a background thread that never finished.
     Mostly this fixes problems that the buffer-age and SHM capture changes below brought in; resetting the cursor state and the reset after a failed bind are new compared with niri ([#120](https://github.com/Deliveos/nori/pull/120), [#138](https://github.com/Deliveos/nori/pull/138); fixes [#116](https://github.com/Deliveos/nori/issues/116), [#129](https://github.com/Deliveos/nori/issues/129)).
     When a cursor bitmap fails to render, niri sends a transparent one and nothing more until the bitmap changes, so the consumer shows no cursor; nori sends the bitmap again with the next frame ([#138](https://github.com/Deliveos/nori/pull/138); fixes [#130](https://github.com/Deliveos/nori/issues/130)).
 
+### Rendering
+
+- **Shader elements on GPUs without instancing.**
+    niri draws some elements with its own drawing code instead of smithay's, once per damage rectangle: for example borders and focus rings with rounded corners or gradients, tab indicators, shadows, the resize animation and custom open and close animations.
+    Without instancing support (GLES 2 drivers that lack either of the two instancing extensions), niri draws these rectangles in batches of 10, but each batch draws one rectangle and moves on by one instead of 10, so of n = 10k + r damage rectangles (1 ≤ r ≤ 10) only the first k + r are drawn, and parts of the element are missing until a later frame repaints them.
+    nori draws every rectangle, as smithay's own renderer does, and has a test for it in `src/render_helpers/shader_element.rs` ([#233](https://github.com/Deliveos/nori/pull/233); fixes [#189](https://github.com/Deliveos/nori/issues/189)).
+
 ### Session
 
 - **Several idle inhibitors on one surface.**
