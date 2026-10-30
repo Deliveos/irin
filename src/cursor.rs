@@ -193,22 +193,8 @@ impl CursorManager {
         file.read_to_end(&mut buf)
             .context("error reading cursor icon file")?;
 
-        let mut images = parse_xcursor(&buf).context("error parsing cursor icon file")?;
-
-        let (width, height) = images
-            .iter()
-            .min_by_key(|image| (size - image.size as i32).abs())
-            .map(|image| (image.width, image.height))
-            .unwrap();
-
-        images.retain(move |image| image.width == width && image.height == height);
-
-        let animation_duration = images.iter().fold(0, |acc, image| acc + image.delay);
-
-        Ok(XCursor {
-            images,
-            animation_duration,
-        })
+        let images = parse_xcursor(&buf).context("error parsing cursor icon file")?;
+        XCursor::from_images(images, size)
     }
 
     /// Set the common XCURSOR env variables.
@@ -303,6 +289,33 @@ pub struct XCursor {
 }
 
 impl XCursor {
+    /// Creates a cursor from the images of an Xcursor file, picking the closest ones to `size`.
+    ///
+    /// The values come from a file in the cursor theme, so they're not trusted.
+    fn from_images(mut images: Vec<Image>, size: i32) -> anyhow::Result<Self> {
+        let (width, height) = images
+            .iter()
+            .min_by_key(|image| (i64::from(size) - i64::from(image.size)).abs())
+            .map(|image| (image.width, image.height))
+            .context("cursor icon file has no images")?;
+
+        images.retain(move |image| image.width == width && image.height == height);
+
+        // We only use pixels_rgba, so free the other copy of the pixels.
+        for image in &mut images {
+            image.pixels_argb = Vec::new();
+        }
+
+        let animation_duration = images
+            .iter()
+            .fold(0u32, |acc, image| acc.saturating_add(image.delay));
+
+        Ok(XCursor {
+            images,
+            animation_duration,
+        })
+    }
+
     /// Given a time, calculate which frame to show, and how much time remains until the next frame.
     ///
     /// Time will wrap, so if for instance the cursor has an animation lasting 100ms,
@@ -339,5 +352,64 @@ impl XCursor {
     /// Get hotspot for the given `image`.
     pub fn hotspot(image: &Image) -> Point<i32, Physical> {
         (image.xhot as i32, image.yhot as i32).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image(size: u32, delay: u32) -> Image {
+        Image {
+            size,
+            width: 1,
+            height: 1,
+            xhot: 0,
+            yhot: 0,
+            delay,
+            pixels_rgba: vec![1, 2, 3, 4],
+            pixels_argb: vec![4, 1, 2, 3],
+        }
+    }
+
+    #[test]
+    fn file_without_images_is_an_error() {
+        // A valid header with no table of contents entries.
+        let mut file = Vec::new();
+        file.extend_from_slice(b"Xcur");
+        file.extend_from_slice(&16u32.to_le_bytes()); // Header size.
+        file.extend_from_slice(&0x1_0000u32.to_le_bytes()); // Version.
+        file.extend_from_slice(&0u32.to_le_bytes()); // Number of entries.
+
+        let images = parse_xcursor(&file).unwrap();
+        assert!(images.is_empty());
+        assert!(XCursor::from_images(images, 24).is_err());
+    }
+
+    #[test]
+    fn image_size_above_i32_max() {
+        // 1 << 31 is i32::MIN when cast to i32.
+        let images = vec![image(1 << 31, 0), image(u32::MAX, 0)];
+        let cursor = XCursor::from_images(images, 24).unwrap();
+        assert_eq!(cursor.frames().len(), 2);
+    }
+
+    #[test]
+    fn huge_animation_delays() {
+        let images = vec![image(24, u32::MAX), image(24, u32::MAX), image(24, 5)];
+        let cursor = XCursor::from_images(images, 24).unwrap();
+        assert_eq!(cursor.animation_duration, u32::MAX);
+        assert_eq!(cursor.frame(0).0, 0);
+        assert_eq!(cursor.frame(u32::MAX).0, 0);
+    }
+
+    #[test]
+    fn unused_pixel_copy_is_freed() {
+        let cursor = XCursor::from_images(vec![image(24, 0), image(24, 10)], 24).unwrap();
+        for frame in cursor.frames() {
+            assert_eq!(frame.pixels_rgba, [1, 2, 3, 4]);
+            assert!(frame.pixels_argb.is_empty());
+            assert_eq!(frame.pixels_argb.capacity(), 0);
+        }
     }
 }
