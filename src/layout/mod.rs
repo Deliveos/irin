@@ -132,6 +132,9 @@ pub trait LayoutElement {
     /// Type that can be used as a unique ID of this element.
     type Id: PartialEq + std::fmt::Debug + Clone;
 
+    /// Type by which children refer to their parent element.
+    type ParentKey: Eq + std::hash::Hash;
+
     /// Unique ID of this element.
     fn id(&self) -> &Self::Id;
 
@@ -323,7 +326,15 @@ pub trait LayoutElement {
         rules.geometry_corner_radius.unwrap_or_default()
     }
 
-    fn is_child_of(&self, parent: &Self) -> bool;
+    /// Returns the key by which children refer to this element as their parent.
+    fn key_as_parent(&self) -> Self::ParentKey;
+
+    /// Returns the key of this element's parent, if it has one.
+    fn parent_key(&self) -> Option<Self::ParentKey>;
+
+    fn is_child_of(&self, parent: &Self) -> bool {
+        self.parent_key() == Some(parent.key_as_parent())
+    }
 
     fn rules(&self) -> &ResolvedWindowRules;
 

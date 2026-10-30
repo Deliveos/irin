@@ -132,6 +132,7 @@ impl TestWindow {
 
 impl LayoutElement for TestWindow {
     type Id = usize;
+    type ParentKey = usize;
 
     fn id(&self) -> &Self::Id {
         &self.id
@@ -239,8 +240,12 @@ impl LayoutElement for TestWindow {
         self.inner.borrow().requested_size
     }
 
-    fn is_child_of(&self, _parent: &Self) -> bool {
-        false
+    fn key_as_parent(&self) -> usize {
+        self.id
+    }
+
+    fn parent_key(&self) -> Option<usize> {
+        None
     }
 
     fn refresh(&self) {}

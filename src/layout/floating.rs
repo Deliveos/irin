@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::collections::HashSet;
 use std::iter::zip;
 use std::rc::Rc;
 
@@ -485,31 +486,49 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn bring_up_descendants_of(&mut self, idx: usize) {
-        let tile = &self.tiles[idx];
-        let win = tile.window();
-
         // We always maintain the correct stacking order, so walking descendants back to front
-        // should give us all of them.
-        let mut descendants: Vec<usize> = Vec::new();
+        // should give us all of them. Look parents up in a set, since a client controls how many
+        // windows there are.
+        let mut parents = HashSet::from([self.tiles[idx].window().key_as_parent()]);
+        let mut is_descendant = vec![false; self.tiles.len() - idx];
         for (i, tile_below) in self.tiles.iter().enumerate().skip(idx + 1).rev() {
             let win_below = tile_below.window();
-            if win_below.is_child_of(win)
-                || descendants
-                    .iter()
-                    .any(|idx| win_below.is_child_of(self.tiles[*idx].window()))
+            if win_below
+                .parent_key()
+                .is_some_and(|parent| parents.contains(&parent))
             {
-                descendants.push(i);
+                parents.insert(win_below.key_as_parent());
+                is_descendant[i - idx] = true;
             }
         }
 
-        // Now, descendants is in back-to-front order, and repositioning them in the front-to-back
-        // order will preserve the subsequent indices and work out right.
-        let mut idx = idx;
-        #[allow(clippy::explicit_counter_loop)]
-        for descendant_idx in descendants.into_iter().rev() {
-            self.raise_window(descendant_idx, idx);
-            idx += 1;
+        let Some(last) = is_descendant.iter().rposition(|&d| d) else {
+            return;
+        };
+        is_descendant.truncate(last + 1);
+
+        // Move the descendants right above the window, keeping their order. Do it with one stable
+        // partition of the window and the tiles down to the last descendant rather than with a
+        // remove and insert for each, because tiles are large.
+        let mut tiles_below = self.tiles.split_off(idx + last + 1);
+        let mut data_below = self.data.split_off(idx + last + 1);
+        let tiles = self.tiles.split_off(idx);
+        let data = self.data.split_off(idx);
+        let mut others = Vec::with_capacity(tiles.len());
+        for ((tile, data), is_descendant) in zip(zip(tiles, data), is_descendant) {
+            if is_descendant {
+                self.tiles.push(tile);
+                self.data.push(data);
+            } else {
+                others.push((tile, data));
+            }
         }
+        for (tile, data) in others {
+            self.tiles.push(tile);
+            self.data.push(data);
+        }
+        self.tiles.append(&mut tiles_below);
+        self.data.append(&mut data_below);
     }
 
     pub fn remove_tile(&mut self, id: &W::Id) -> RemovedTile<W> {
