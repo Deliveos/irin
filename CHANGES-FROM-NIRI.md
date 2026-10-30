@@ -39,7 +39,8 @@ Pull requests that change how nori behaves compared with niri update this file i
     - a blur region with more than 64 rectangles is blurred over its bounding box ([details](#blur-region-cap));
     - configured output positions are clamped to ±16777216, and custom modes with zero timings are ignored ([details](#output-positions-and-custom-modes));
     - DisplayConfig rejects scales that are not finite and positive ([details](#displayconfig-scale));
-    - at most 4 screenshots can be saved at once ([details](#screenshot-threads)).
+    - at most 4 screenshots can be saved at once ([details](#screenshot-threads));
+    - the xwayland-satellite on-demand test must finish within 2 seconds, or the integration stays off until a config reload changes the `xwayland-satellite` section, or a restart ([details](#xwayland-satellite-test)).
 - Screenshots named from `screenshot-path` never overwrite an existing file: when the name is taken (two screenshots in the same second, or a `screenshot-path` without time fields), nori adds ` (2)` … ` (999)`, and saving fails after that; with `screenshot-path null` D-Bus screenshots go to `$XDG_RUNTIME_DIR/screenshot.png` instead of `/tmp/screenshot.png` ([details](#screenshots)).
 - Only the owner of the `org.gnome.Orca.KeyboardMonitor` bus name may listen to or grab keys through the accessibility D-Bus interface ([details](#keyboardmonitor)).
 - PipeWire screencasts offer 4 buffers by default instead of 8 ([details](#pipewire-buffers)).
@@ -140,6 +141,7 @@ Entries added after these say in the entry itself where their test is, or that t
 ## Freeze and hang fixes
 
 The gamma, blur and suspend fixes follow rule 2 in [AGENTS.md](AGENTS.md#3-golden-rules): don't block the main thread.
+The xwayland-satellite fix bounds a wait on the main thread to 2 seconds.
 The spawn fix is about a background thread that never finished.
 
 - **`load-config-file` over IPC with a path on a stalled mount.**
@@ -149,6 +151,10 @@ The spawn fix is about a background thread that never finished.
     With the systemd feature (on by default), niri's spawner thread hangs forever when the exec of a spawned program fails, for example because the program is missing: each failed spawn leaves a thread and a process behind, and the error is never logged.
     In nori the intermediate child waits on its pipe with a 2-second timeout, so the spawn returns the error after about 2 seconds and nori logs it ([9029b62d](https://github.com/Deliveos/nori/commit/9029b62d31c2d32304e70ece335ddf03a9f7fb3d); fixes [#17](https://github.com/Deliveos/nori/issues/17)).
     A worry that this timeout could leave spawned programs in nori's own cgroup ([#80](https://github.com/Deliveos/nori/issues/80)) was checked and closed as not planned.
+- <a id="xwayland-satellite-test"></a>**xwayland-satellite that doesn't exit on the on-demand test.**
+    At startup, and on a config reload that changes the `xwayland-satellite` section while the integration isn't running (it was `off`, or an earlier test or socket setup failed), niri runs the configured program with `--test-listenfd-support` on the main thread and waits for it to exit with no time limit, so a `path` to a program that doesn't exit on these arguments hangs startup or freezes the compositor on such a reload.
+    nori kills the program after 2 seconds and disables the integration, as when the test fails; startup or such a reload still waits for those 2 seconds.
+    The timeout has a unit test in `src/utils/xwayland/satellite.rs` ([#220](https://github.com/Deliveos/nori/pull/220); fixes [#158](https://github.com/Deliveos/nori/issues/158)).
 - **Gamma ramps from a pipe.**
     For wlr-gamma-control `set_gamma`, niri reads the ramps from the client's file descriptor on the main thread, so a client that passes a pipe and never writes to it freezes the compositor, including input and VT switching.
     nori reads with `pread`, which fails on pipes instead of blocking, so that request fails and nori logs "failed to read gamma data" ([f40ced8b](https://github.com/Deliveos/nori/commit/f40ced8b4e2cb176042d94867049b7d25239867a); fixes [#8](https://github.com/Deliveos/nori/issues/8)).
