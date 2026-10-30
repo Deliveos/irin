@@ -93,6 +93,9 @@ pub struct Tty {
     ignored_nodes: HashSet<DrmNode>,
     // Devices indexed by DRM node (not necessarily the render node).
     devices: HashMap<DrmNode, OutputDevice>,
+    // DRM lease states of removed devices, by node. Clients can keep their lease objects of a
+    // removed device, and smithay looks up the lease state by node when they destroy them.
+    removed_drm_lease_states: HashMap<DrmNode, DrmLeaseState>,
     // The dma-buf global corresponds to the output device (the primary GPU). It is only `Some()`
     // if we have a device corresponding to the primary GPU.
     dmabuf_global: Option<DmabufGlobal>,
@@ -526,6 +529,7 @@ impl Tty {
             primary_render_node,
             ignored_nodes: HashSet::new(),
             devices: HashMap::new(),
+            removed_drm_lease_states: HashMap::new(),
             dmabuf_global: None,
             update_output_config_on_resume: false,
             debug_tint: false,
@@ -938,6 +942,10 @@ impl Tty {
         let drm_lease_state = DrmLeaseState::new::<State>(&niri.display_handle, &node)
             .map_err(|err| warn!("error initializing DRM leasing for {node}: {err:?}"))
             .ok();
+        if drm_lease_state.is_some() {
+            // Lease objects of an earlier device with this node now go to the new state.
+            self.removed_drm_lease_states.remove(&node);
+        }
 
         let device = OutputDevice {
             token,
@@ -1180,8 +1188,11 @@ impl Tty {
         let mut device = self.devices.remove(&node).unwrap();
         let device_fd = device.drm.device_fd().device_fd();
 
-        if let Some(lease_state) = &mut device.drm_lease_state {
+        if let Some(mut lease_state) = device.drm_lease_state.take() {
             lease_state.disable_global::<State>();
+            // connector_disconnected() above withdrew the connectors; this catches any left.
+            lease_state.suspend();
+            self.removed_drm_lease_states.insert(node, lease_state);
         }
 
         if let Some(render_node) = device.render_node {
@@ -2635,6 +2646,19 @@ impl Tty {
 
     pub fn get_device_from_node(&mut self, node: DrmNode) -> Option<&mut OutputDevice> {
         self.devices.get_mut(&node)
+    }
+
+    /// Returns the DRM lease state for a node, including one of a removed device.
+    pub fn drm_lease_state(&mut self, node: DrmNode) -> Option<&mut DrmLeaseState> {
+        if let Some(state) = self
+            .devices
+            .get_mut(&node)
+            .and_then(|device| device.drm_lease_state.as_mut())
+        {
+            return Some(state);
+        }
+
+        self.removed_drm_lease_states.get_mut(&node)
     }
 
     pub fn disconnected_connector_name_by_name_match(&self, target: &str) -> Option<OutputName> {
