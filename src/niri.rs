@@ -1610,6 +1610,11 @@ impl State {
     }
 
     pub fn set_xkb_config(&mut self, xkb: XkbConfig) {
+        if let Err(err) = check_xkb_names(&xkb) {
+            warn!("error updating xkb config: {err:?}");
+            return;
+        }
+
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         let restore = self.keyboard_state_to_restore();
         if let Err(err) = keyboard.set_xkb_config(self, xkb) {
@@ -2745,8 +2750,13 @@ impl Niri {
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&display_handle);
 
         let mut seat: Seat<State> = seat_state.new_wl_seat(&display_handle, backend.seat_name());
+        let mut xkb = config_.input.keyboard.xkb.to_xkb_config();
+        if let Err(err) = check_xkb_names(&xkb) {
+            warn!("error loading the configured xkb keymap, using default: {err:?}");
+            xkb = XkbConfig::default();
+        }
         let keyboard = match seat.add_keyboard(
-            config_.input.keyboard.xkb.to_xkb_config(),
+            xkb,
             config_.input.keyboard.repeat_delay.into(),
             config_.input.keyboard.repeat_rate.into(),
         ) {
@@ -7750,6 +7760,26 @@ fn scale_relocate_crop<E: Element>(
     let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
     let elem = RelocateRenderElement::from_element(elem, ws_geo.loc, Relocate::Relative);
     CropRenderElement::from_element(elem, output_scale, ws_geo)
+}
+
+/// Checks that xkbcommon can take these names.
+///
+/// xkbcommon-rs unwraps `CString::new()` on the rules, model, layout and variant, so a NUL byte in
+/// them (KDL strings can have one) would panic.
+fn check_xkb_names(xkb: &XkbConfig) -> anyhow::Result<()> {
+    let names = [
+        ("rules", xkb.rules),
+        ("model", xkb.model),
+        ("layout", xkb.layout),
+        ("variant", xkb.variant),
+    ];
+    for (what, value) in names {
+        ensure!(
+            !value.contains('\0'),
+            "xkb {what} contains a NUL byte: {value:?}"
+        );
+    }
+    Ok(())
 }
 
 /// Asks logind to let nori handle the power key, and returns the inhibitor fd.

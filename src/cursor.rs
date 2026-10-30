@@ -199,7 +199,15 @@ impl CursorManager {
 
     /// Set the common XCURSOR env variables.
     fn ensure_env(theme: &str, size: u8) {
-        env::set_var("XCURSOR_THEME", theme);
+        // set_var() panics on a NUL byte, and KDL strings can have one.
+        if theme.contains('\0') {
+            // Unset it instead of leaving the previous theme there. Clients then use their own
+            // default theme, while nori finds no theme by this name and draws its built-in arrow.
+            warn!("cursor theme name contains a NUL byte, unsetting XCURSOR_THEME: {theme:?}");
+            env::remove_var("XCURSOR_THEME");
+        } else {
+            env::set_var("XCURSOR_THEME", theme);
+        }
         env::set_var("XCURSOR_SIZE", size.to_string());
     }
 

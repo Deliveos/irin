@@ -495,3 +495,36 @@ fn second_layer_surface_for_mapped_layer() {
     assert_protocol_error(&mut f, id, &second, code);
     assert_niri_alive(&mut f);
 }
+
+#[test]
+fn nul_bytes_in_xkb_names_and_cursor_theme() {
+    // KDL strings can contain NUL bytes, and xkbcommon-rs and std::env::set_var() panic on them.
+    let config = niri_config::Config::parse_mem(
+        r#"
+        input {
+            keyboard {
+                xkb { layout "us\u{0}"; }
+            }
+        }
+        cursor { xcursor-theme "a\u{0}b"; }
+        "#,
+    )
+    .unwrap();
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+
+    // On reload too.
+    let config = niri_config::Config::parse_mem(
+        r#"
+        input {
+            keyboard {
+                xkb { variant "a\u{0}"; }
+            }
+        }
+        cursor { xcursor-theme "c\u{0}d"; }
+        "#,
+    )
+    .unwrap();
+    f.niri_state().reload_config(Ok(config));
+    f.dispatch();
+}

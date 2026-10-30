@@ -550,6 +550,12 @@ async fn validate_action(action: &Action) -> Result<(), String> {
         }
     }
 
+    if let Action::SetWorkspaceName { name, .. } = action {
+        if name.contains('\0') {
+            return Err(String::from("workspace name must not contain a NUL byte"));
+        }
+    }
+
     if let Action::LoadConfigFile { path: Some(path) } = action {
         if !is_file_on_thread(path).await? {
             return Err(format!("path does not point to a file: {path}"));
@@ -1094,5 +1100,22 @@ impl State {
         let event = Event::ScreenshotCaptured { path };
         state.apply(event.clone());
         server.send_event(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_name_with_nul_is_refused() {
+        let action = |name: &str| Action::SetWorkspaceName {
+            name: String::from(name),
+            workspace: None,
+        };
+        // Checking this action doesn't wait for anything, so the future is ready right away.
+        let validate = |action| validate_action(&action).now_or_never().unwrap();
+        assert!(validate(action("a\0b")).is_err());
+        assert_eq!(validate(action("ab")), Ok(()));
     }
 }

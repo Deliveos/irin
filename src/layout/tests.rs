@@ -1701,6 +1701,13 @@ fn move_floating_column_to_workspace_on_other_output() {
     assert_eq!(layout.active_output().unwrap().name(), "output1");
 }
 
+#[test]
+fn workspace_name_with_nul_is_ignored() {
+    let mut layout = check_ops([Op::AddOutput(1)]);
+    layout.set_workspace_name(String::from("a\0b"), None);
+    assert!(layout.workspaces().all(|(_, _, ws)| ws.name().is_none()));
+}
+
 fn workspace_output_name(layout: &Layout<TestWindow>, ws_name: usize) -> &str {
     layout
         .workspaces()
