@@ -150,6 +150,10 @@ A crash of the compositor ends the whole session.
     nori retries right away after `EINTR` and `ECONNABORTED`; after other errors it logs a warning and stops accepting on that socket for 1 second, except on a security-context socket, which comes from a client: nori closes that one, so its client has to create a new security context.
     A security context whose socket can't be polled is dropped with a warning.
     The tests are `security_context_with_unusable_listen_fd` in `src/tests/crash_regressions.rs`, and `accept_error_actions` and `source_does_not_keep_the_event_loop_alive` in `src/utils/listening_socket.rs` ([#209](https://github.com/Deliveos/nori/pull/209); fixes [#149](https://github.com/Deliveos/nori/issues/149)).
+- **NUL bytes in hotkey overlay titles.**
+    A bind's `hotkey-overlay-title`, and the command of a `spawn` or `spawn-sh` bind that the hotkey overlay lists, can contain a NUL byte (`"\u{0}"`), and niri passes these titles to pango when it shows the overlay or reads it to a screen reader.
+    glib's string conversion for pango panics on a NUL byte in builds with debug assertions (the dev profile and `cargo test`); release builds don't make that check.
+    nori removes NUL bytes from these titles, with the test `nul_bytes_are_removed_from_titles` in `src/ui/hotkey_overlay.rs` ([#251](https://github.com/Deliveos/nori/pull/251); fixes [#238](https://github.com/Deliveos/nori/issues/238)).
 
 Most crash fixes from the older work (output positions, workspaces, the window switcher click, clipboard writer threads) come with client-server regression tests in `src/tests/crash_regressions.rs`, which niri doesn't have ([4a000d50](https://github.com/Deliveos/nori/commit/4a000d504c9ab0fd8b7c731a004a90a68b353dd7)); the spring fix has unit tests, the hotkey overlay fix has only a unit test of its precondition (it doesn't call `render()`), and the `stop-cast` and custom mode fixes have none.
 Of the later crash fixes above, the IPC request limit and both `xdg_positioner` fixes have cases in that file, and the DisplayConfig scale fix has a unit test in `src/dbus/mutter_display_config.rs`.

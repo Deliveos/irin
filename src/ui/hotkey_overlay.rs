@@ -202,6 +202,9 @@ fn format_bind(binds: &[Bind], action: &Action) -> Option<(Option<Key>, String)>
         None
     };
     let title = title.unwrap_or_else(|| action_name(action));
+    // The custom title and the spawn command come from the config and can contain a NUL byte,
+    // which glib's string conversion for pango panics on in debug builds.
+    let title = title.replace('\0', "");
 
     Some((key, title))
 }
@@ -963,6 +966,31 @@ mod tests {
         Mod+Shift_L
         Super+Ctrl
         Mod+Alt
+        ");
+    }
+
+    #[test]
+    fn nul_bytes_are_removed_from_titles() {
+        let config = Config::parse_mem(
+            r#"binds {
+                Mod+T hotkey-overlay-title="Open a\u{0}Terminal" { spawn "alacritty"; }
+                Mod+D { spawn "fuzzel\u{0}"; }
+                Mod+E { spawn-sh "nautilus\u{0} --new-window"; }
+            }"#,
+        )
+        .unwrap();
+
+        let overlay = HotkeyOverlay::new(Rc::new(RefCell::new(config)), ModKey::Super);
+        // Passes the titles to pango, which would panic on a NUL byte in debug builds.
+        let text = overlay.a11y_text();
+        let lines: Vec<_> = text
+            .lines()
+            .filter(|line| line.starts_with("Super"))
+            .collect();
+        assert_snapshot!(lines.join("\n"), @"
+        Super + T Open aTerminal
+        Super + D Spawn fuzzel
+        Super + E Spawn nautilus
         ");
     }
 
