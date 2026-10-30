@@ -756,8 +756,8 @@ impl Niri {
             return;
         };
 
-        // Session::stop() waits for the interface lock, which a running D-Bus method of the session
-        // holds, and talks to the bus, so don't block the main thread on it.
+        // Session::stop() waits for the object server's locks, which running D-Bus calls can hold,
+        // and talks to the bus, so don't block the main thread on it.
         let res = thread::Builder::new()
             .name("ScreenCast Session Stop".to_owned())
             .spawn(move || {

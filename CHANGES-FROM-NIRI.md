@@ -143,6 +143,12 @@ The spawn fix is about a background thread that never finished.
 - **Stopping a screencast.**
     When a cast ends from the compositor's side (its window or output goes away, PipeWire fails, or the user stops it), niri runs the D-Bus `Session.Stop` code with `block_on` on the main thread, which waits for the session's interface lock (held by a running `RecordMonitor` or `RecordWindow` call on that session) and for messages to the bus, and panics if sending the `Closed` signal or removing the D-Bus objects fails.
     nori runs it on a thread and logs these errors instead ([#221](https://github.com/Deliveos/nori/pull/221); fixes [#161](https://github.com/Deliveos/nori/issues/161)).
+- **A screencast session that stops during `RecordMonitor` or `RecordWindow`.**
+    niri's D-Bus `RecordMonitor` and `RecordWindow` hold the session's interface lock for writing while they wait for the D-Bus object server's lock to add the stream.
+    Stopping the session from the compositor's side, and D-Bus `Introspect`, `Properties.Get` and `Properties.GetAll` calls, hold the object server's lock while they wait for the session's interface lock.
+    When one of them takes the object server's lock after `RecordMonitor` or `RecordWindow` took the session's lock and before it adds the stream, both sides wait forever: in niri, which stops the session on the main thread, this can freeze the compositor, and in nori since [#221](https://github.com/Deliveos/nori/pull/221) it hung the ScreenCast D-Bus service.
+    nori's `RecordMonitor` and `RecordWindow` take the session's interface lock only for reading; a stream that one of them adds after the session stopped is removed again and the call fails.
+    A test in `src/dbus/mutter_screen_cast.rs` stops a session while `RecordMonitor` runs ([#250](https://github.com/Deliveos/nori/pull/250); fixes [#244](https://github.com/Deliveos/nori/issues/244)).
 - <a id="blur-region-cap"></a>**Huge blur regions.**
     niri converts an ext-background-effect blur region into non-overlapping rectangles on the render path, with no limit on the number of rectangles, and any client can use that protocol.
     In the issue's measurement, 4000 rectangles (about 100 KB of requests) took 9.8 seconds and produced 16 million rectangles.
