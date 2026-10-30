@@ -252,10 +252,11 @@ impl ClosingWindow {
             let input_to_geo = Mat3::from_scale(area_size / geo_size)
                 * Mat3::from_translation((area_loc - geo_loc) / area_size);
 
-            let tex_scale = self.buffer.texture_scale();
+            // The buffers for other render targets can have a different size.
+            let tex_scale = buffer.texture_scale();
             let tex_scale = Vec2::new(tex_scale.x as f32, tex_scale.y as f32);
             let tex_loc = Vec2::new(offset.x as f32, offset.y as f32);
-            let tex_size = self.buffer.texture().size();
+            let tex_size = buffer.texture().size();
             let tex_size = Vec2::new(tex_size.w as f32, tex_size.h as f32) / tex_scale;
 
             let geo_to_tex =
