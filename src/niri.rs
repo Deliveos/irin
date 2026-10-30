@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -200,6 +200,11 @@ use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
 
 const CLEAR_COLOR_LOCKED: [f32; 4] = [0.3, 0.1, 0.1, 1.];
+
+/// How many screenshots can be encoded and saved at once.
+///
+/// Each one holds a copy of its pixels until its PNG is written, about 33 MB for a 4K output.
+pub const MAX_SCREENSHOTS_IN_FLIGHT: usize = 4;
 
 // We'll try to send frame callbacks at least once a second. We'll make a timer that fires once a
 // second, so with the worst timing the maximum interval between two frame callbacks for a surface
@@ -452,6 +457,8 @@ pub struct Niri {
     pub locked_hint: Option<bool>,
 
     pub screenshot_ui: ScreenshotUi,
+    /// Screenshots being encoded and saved on their threads.
+    pub screenshots_in_flight: Arc<AtomicUsize>,
     pub config_error_notification: ConfigErrorNotification,
     pub hotkey_overlay: HotkeyOverlay,
     pub exit_confirm_dialog: ExitConfirmDialog,
@@ -2988,6 +2995,7 @@ impl Niri {
             locked_hint: None,
 
             screenshot_ui,
+            screenshots_in_flight: Arc::new(AtomicUsize::new(0)),
             config_error_notification,
             hotkey_overlay,
             exit_confirm_dialog,
@@ -6620,6 +6628,8 @@ impl Niri {
     ) -> anyhow::Result<()> {
         let _span = tracy_client::span!("Niri::screenshot");
 
+        self.check_screenshots_in_flight()?;
+
         self.update_render_elements(Some(output));
 
         let size = output.current_mode().unwrap().size;
@@ -6657,6 +6667,8 @@ impl Niri {
         path: Option<String>,
     ) -> anyhow::Result<()> {
         let _span = tracy_client::span!("Niri::screenshot_window");
+
+        self.check_screenshots_in_flight()?;
 
         let scale = Scale::from(output.current_scale().fractional_scale());
         let alpha =
@@ -6722,6 +6734,8 @@ impl Niri {
         write_to_disk: bool,
         path_arg: Option<String>,
     ) -> anyhow::Result<()> {
+        self.check_screenshots_in_flight()?;
+
         let path = write_to_disk
             .then(|| {
                 // When given an explicit path, don't try to strftime it or create parents.
@@ -6766,7 +6780,7 @@ impl Niri {
             .unwrap();
 
         // Encode and save the image in a thread as it's slow.
-        thread::spawn(move || {
+        self.spawn_screenshot_thread(move || {
             let mut buf = vec![];
 
             let w = std::io::Cursor::new(&mut buf);
@@ -6774,6 +6788,7 @@ impl Niri {
                 warn!("error encoding screenshot image: {err:?}");
                 return;
             }
+            drop(pixels);
 
             let buf: Arc<[u8]> = Arc::from(buf.into_boxed_slice());
             let _ = tx.send(buf.clone());
@@ -6812,6 +6827,7 @@ impl Niri {
             } else {
                 debug!("not saving screenshot to disk");
             }
+            drop(buf);
 
             #[cfg(feature = "dbus")]
             if let Err(err) = crate::utils::show_screenshot_notification(image_path.as_deref()) {
@@ -6824,7 +6840,42 @@ impl Niri {
                 .and_then(|p| p.to_str())
                 .map(|s| s.to_owned());
             let _ = event_tx.send(path_string);
-        });
+        })
+    }
+
+    /// Returns an error if a new screenshot would go over [`MAX_SCREENSHOTS_IN_FLIGHT`].
+    ///
+    /// Check this before rendering the screenshot, so that a burst of requests doesn't make the
+    /// main thread render them all.
+    pub fn check_screenshots_in_flight(&self) -> anyhow::Result<()> {
+        if self.screenshots_in_flight.load(Ordering::SeqCst) >= MAX_SCREENSHOTS_IN_FLIGHT {
+            bail!("too many screenshots are being saved, try again later");
+        }
+        Ok(())
+    }
+
+    /// Runs `f` on a new thread to encode and save a screenshot, unless too many are running.
+    pub fn spawn_screenshot_thread(&self, f: impl FnOnce() + Send + 'static) -> anyhow::Result<()> {
+        self.check_screenshots_in_flight()?;
+
+        struct InFlight(Arc<AtomicUsize>);
+        impl Drop for InFlight {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        self.screenshots_in_flight.fetch_add(1, Ordering::SeqCst);
+        let in_flight = InFlight(self.screenshots_in_flight.clone());
+
+        // If spawning fails, the closure and the counter guard are dropped here.
+        thread::Builder::new()
+            .name("Screenshot Saver".to_owned())
+            .spawn(move || {
+                let _in_flight = in_flight;
+                f();
+            })
+            .context("error spawning a thread to save the screenshot")?;
 
         Ok(())
     }
@@ -6842,6 +6893,8 @@ impl Niri {
         use crate::render_helpers::texture::TextureRenderElement;
 
         let _span = tracy_client::span!("Niri::screenshot_all_outputs");
+
+        self.check_screenshots_in_flight()?;
 
         self.update_render_elements(None);
 
@@ -6927,7 +6980,7 @@ impl Niri {
         let path = make_screenshot_path(&self.config.borrow()).ok().flatten();
         debug!("saving screenshot to {path:?}");
 
-        thread::spawn(move || {
+        self.spawn_screenshot_thread(move || {
             let write = |file: std::fs::File| {
                 let w = std::io::BufWriter::new(file);
                 write_png_rgba8(w, geo.size.w as u32, geo.size.h as u32, &pixels)
@@ -6961,9 +7014,7 @@ impl Niri {
                 Ok(path) => on_done(path),
                 Err(err) => warn!("error saving screenshot: {err:?}"),
             }
-        });
-
-        Ok(())
+        })
     }
 
     pub fn clear_input_state(&mut self) {

@@ -36,3 +36,44 @@ fn egl_screenshot_targets_render_separately_with_block_out() {
     let [a, b, c] = capture_texture_ids(&mut f);
     assert!(a != b && b != c && a != c, "{a} {b} {c}");
 }
+
+#[test]
+fn screenshot_threads_are_limited() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use crate::niri::MAX_SCREENSHOTS_IN_FLIGHT;
+
+    let mut f = Fixture::new();
+    let niri = f.niri();
+
+    // Threads that wait until the test lets them finish.
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    let (done_tx, done_rx) = mpsc::channel();
+    for _ in 0..MAX_SCREENSHOTS_IN_FLIGHT {
+        let release_rx = release_rx.clone();
+        let done_tx = done_tx.clone();
+        niri.spawn_screenshot_thread(move || {
+            let _ = release_rx.lock().unwrap().recv();
+            let _ = done_tx.send(());
+        })
+        .unwrap();
+    }
+
+    // One more is refused, and so is the check before rendering one.
+    assert!(niri.spawn_screenshot_thread(|| ()).is_err());
+    assert!(niri.check_screenshots_in_flight().is_err());
+
+    // Once they finish, screenshots work again.
+    drop(release_tx);
+    for _ in 0..MAX_SCREENSHOTS_IN_FLIGHT {
+        done_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while niri.check_screenshots_in_flight().is_err() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    niri.spawn_screenshot_thread(|| ()).unwrap();
+}

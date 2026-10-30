@@ -38,7 +38,8 @@ Pull requests that change how nori behaves compared with niri update this file i
     - at most 16 pastes of nori's own clipboard data (such as a copied screenshot) can be pending at once ([details](#clipboard-writer-threads));
     - a blur region with more than 64 rectangles is blurred over its bounding box ([details](#blur-region-cap));
     - configured output positions are clamped to ±16777216, and custom modes with zero timings are ignored ([details](#output-positions-and-custom-modes));
-    - DisplayConfig rejects scales that are not finite and positive ([details](#displayconfig-scale)).
+    - DisplayConfig rejects scales that are not finite and positive ([details](#displayconfig-scale));
+    - at most 4 screenshots can be saved at once ([details](#screenshot-threads)).
 - Screenshots named from `screenshot-path` never overwrite an existing file: when the name is taken (two screenshots in the same second, or a `screenshot-path` without time fields), nori adds ` (2)` … ` (999)`, and saving fails after that; with `screenshot-path null` D-Bus screenshots go to `$XDG_RUNTIME_DIR/screenshot.png` instead of `/tmp/screenshot.png` ([details](#screenshots)).
 - Only the owner of the `org.gnome.Orca.KeyboardMonitor` bus name may listen to or grab keys through the accessibility D-Bus interface ([details](#keyboardmonitor)).
 - PipeWire screencasts offer 4 buffers by default instead of 8 ([details](#pipewire-buffers)).
@@ -206,6 +207,11 @@ The spawn fix is about a background thread that never finished.
 - **Errors at the end of the PNG write.**
     niri ignores errors from the last part of a D-Bus screenshot's PNG write, so on a full disk a truncated PNG is reported as saved.
     nori reports the error, and the call fails ([#88](https://github.com/Deliveos/nori/pull/88); fixes [#84](https://github.com/Deliveos/nori/issues/84)).
+- <a id="screenshot-threads"></a>**Bursts of screenshots.**
+    niri starts one thread per screenshot to encode and save the PNG, with no limit, and each thread holds a copy of the pixels (about 33 MB for one 4K output) until it finishes, which for screenshot actions and the screenshot UI includes showing the "Screenshot captured" notification, a D-Bus call that waits for the notification daemon's reply with no time limit; each `org.gnome.Shell.Screenshot` call also renders all outputs on the main thread first, and a failure to start a thread panics.
+    nori saves at most 4 screenshots at once, counting screenshot actions, the screenshot UI and D-Bus calls together, so a burst of D-Bus calls from any session-bus client can make the user's own screenshot keys fail for a moment: further D-Bus calls and `screenshot-screen` and `screenshot-window` actions fail before rendering, and the screenshot UI logs "too many screenshots are being saved" when it saves.
+    Each thread drops its pixels once the PNG is written, the notification call gives up after 5 seconds, and a failure to start the thread is logged.
+    `screenshot_threads_are_limited` in `src/tests/screenshot.rs` tests the counter ([#222](https://github.com/Deliveos/nori/pull/222); fixes [#157](https://github.com/Deliveos/nori/issues/157)).
 
 ### Windows and popups
 

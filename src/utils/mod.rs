@@ -639,7 +639,11 @@ pub fn show_screenshot_notification(image_path: Option<&Path>) -> anyhow::Result
     use pango::glib;
     use zbus::zvariant;
 
-    let conn = zbus::blocking::Connection::session()?;
+    // The screenshot thread runs this, and holds one of the screenshot slots until it returns, so
+    // don't wait forever for a notification daemon that doesn't reply.
+    let conn = zbus::blocking::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(5))
+        .build()?;
 
     // Try to add the screenshot as an image if possible.
     let mut image_url = None;
