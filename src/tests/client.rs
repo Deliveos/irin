@@ -33,6 +33,8 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
 use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     self, ZwlrLayerSurfaceV1,
 };
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1;
+use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1};
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_head_v1::{self, ZwlrOutputHeadV1};
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::{self, ZwlrOutputManagerV1};
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::client::zwlr_output_mode_v1::{self, ZwlrOutputModeV1};
@@ -67,6 +69,7 @@ pub struct Client {
     pub connection: Connection,
     pub qh: QueueHandle<State>,
     pub display: WlDisplay,
+    pub registry: WlRegistry,
     pub state: State,
 }
 
@@ -98,6 +101,9 @@ pub struct State {
     pub foreign_toplevels: Vec<ForeignToplevel>,
     pub output_heads: Vec<OutputHead>,
     pub output_modes: HashMap<ZwlrOutputModeV1, OutputMode>,
+    /// The serial of the last wlr-output-management `done` event.
+    pub output_manager_serial: u32,
+    pub output_configurations: HashMap<ZwlrOutputConfigurationV1, OutputConfigurationResult>,
 }
 
 /// A toplevel announced through ext-foreign-toplevel-list.
@@ -113,9 +119,20 @@ pub struct ForeignToplevel {
 #[derive(Debug)]
 pub struct OutputHead {
     pub head: ZwlrOutputHeadV1,
+    /// The manager that announced this head.
+    pub manager: ZwlrOutputManagerV1,
     pub name: Option<String>,
     pub enabled: bool,
+    pub modes: Vec<ZwlrOutputModeV1>,
     pub current_mode: Option<ZwlrOutputModeV1>,
+}
+
+/// How the compositor answered a wlr-output-management configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputConfigurationResult {
+    Succeeded,
+    Failed,
+    Cancelled,
 }
 
 /// A mode announced through wlr-output-management.
@@ -309,7 +326,7 @@ impl Client {
             .unwrap();
 
         let display = connection.display();
-        let _registry = display.get_registry(&qh, ());
+        let registry = display.get_registry(&qh, ());
         connection.flush().unwrap();
 
         let state = State {
@@ -337,6 +354,8 @@ impl Client {
             foreign_toplevels: Vec::new(),
             output_heads: Vec::new(),
             output_modes: HashMap::new(),
+            output_manager_serial: 0,
+            output_configurations: HashMap::new(),
         };
 
         Self {
@@ -345,6 +364,7 @@ impl Client {
             connection,
             qh,
             display,
+            registry,
             state,
         }
     }
@@ -364,6 +384,18 @@ impl Client {
         self.display.sync(&self.qh, data.clone());
         self.connection.flush().unwrap();
         data
+    }
+
+    /// Binds wlr-output-management once more, as another part of the same client would.
+    pub fn bind_output_manager(&mut self) -> ZwlrOutputManagerV1 {
+        let global = self
+            .state
+            .globals
+            .iter()
+            .find(|g| g.interface == ZwlrOutputManagerV1::interface().name)
+            .unwrap();
+        let version = min(global.version, ZwlrOutputManagerV1::interface().version);
+        self.registry.bind(global.name, version, &self.qh, ())
     }
 
     pub fn create_window(&mut self) -> &mut Window {
@@ -1385,7 +1417,7 @@ impl Dispatch<ExtForeignToplevelHandleV1, ()> for State {
 impl Dispatch<ZwlrOutputManagerV1, ()> for State {
     fn event(
         state: &mut Self,
-        _proxy: &ZwlrOutputManagerV1,
+        manager: &ZwlrOutputManagerV1,
         event: <ZwlrOutputManagerV1 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
@@ -1395,12 +1427,14 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for State {
             zwlr_output_manager_v1::Event::Head { head } => {
                 state.output_heads.push(OutputHead {
                     head,
+                    manager: manager.clone(),
                     name: None,
                     enabled: false,
+                    modes: Vec::new(),
                     current_mode: None,
                 });
             }
-            zwlr_output_manager_v1::Event::Done { .. } => (),
+            zwlr_output_manager_v1::Event::Done { serial } => state.output_manager_serial = serial,
             zwlr_output_manager_v1::Event::Finished => (),
             _ => unreachable!(),
         }
@@ -1429,7 +1463,10 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for State {
         match event {
             zwlr_output_head_v1::Event::Name { name } => output_head.name = Some(name),
             zwlr_output_head_v1::Event::Mode { mode } => {
-                state.output_modes.insert(mode, OutputMode::default());
+                state
+                    .output_modes
+                    .insert(mode.clone(), OutputMode::default());
+                output_head.modes.push(mode);
             }
             zwlr_output_head_v1::Event::Enabled { enabled } => output_head.enabled = enabled != 0,
             zwlr_output_head_v1::Event::CurrentMode { mode } => {
@@ -1469,3 +1506,24 @@ impl Dispatch<ZwlrOutputModeV1, ()> for State {
         }
     }
 }
+
+impl Dispatch<ZwlrOutputConfigurationV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        conf: &ZwlrOutputConfigurationV1,
+        event: <ZwlrOutputConfigurationV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        let result = match event {
+            zwlr_output_configuration_v1::Event::Succeeded => OutputConfigurationResult::Succeeded,
+            zwlr_output_configuration_v1::Event::Failed => OutputConfigurationResult::Failed,
+            zwlr_output_configuration_v1::Event::Cancelled => OutputConfigurationResult::Cancelled,
+            _ => unreachable!(),
+        };
+        state.output_configurations.insert(conf.clone(), result);
+    }
+}
+
+wayland_client::delegate_noop!(State: ZwlrOutputConfigurationHeadV1);

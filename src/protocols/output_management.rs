@@ -38,7 +38,8 @@ struct ClientData {
 pub struct OutputManagementManagerState {
     display: DisplayHandle,
     serial: u32,
-    clients: HashMap<ClientId, ClientData>,
+    /// Keyed by manager, because one client can bind the global more than once.
+    clients: HashMap<ZwlrOutputManagerV1, ClientData>,
     current_state: HashMap<OutputId, niri_ipc::Output>,
     current_config: niri_config::Outputs,
 }
@@ -54,6 +55,12 @@ pub trait OutputManagementHandler {
 
 struct OutputConfigurationData {
     serial: u32,
+    manager: ZwlrOutputManagerV1,
+}
+
+struct HeadData {
+    output: OutputId,
+    manager: ZwlrOutputManagerV1,
 }
 
 #[derive(Debug)]
@@ -250,7 +257,7 @@ impl OutputManagementManagerState {
         for old in self.current_state.keys() {
             if !new_state.contains_key(old) {
                 changed = true;
-                notify_removed_head(&mut self.clients, old);
+                notify_removed_head(self.clients.values_mut(), old);
             }
         }
         if changed {
@@ -270,7 +277,7 @@ impl<D> GlobalDispatch2<ZwlrOutputManagerV1, D> for OutputManagementManagerGloba
 where
     D: Dispatch<ZwlrOutputManagerV1, EmptyData>,
     D: Dispatch<ZwlrOutputModeV1, EmptyData>,
-    D: Dispatch<ZwlrOutputHeadV1, OutputId>,
+    D: Dispatch<ZwlrOutputHeadV1, HeadData>,
     D: OutputManagementHandler,
     D: 'static,
 {
@@ -292,7 +299,7 @@ where
         for (output, conf) in &g_state.current_state {
             send_new_head::<D>(display, client, &mut client_data, *output, conf);
         }
-        g_state.clients.insert(client.id(), client_data);
+        g_state.clients.insert(manager.clone(), client_data);
         manager.done(g_state.serial);
     }
 
@@ -310,8 +317,8 @@ where
     fn request(
         &self,
         state: &mut D,
-        client: &Client,
-        _manager: &ZwlrOutputManagerV1,
+        _client: &Client,
+        manager: &ZwlrOutputManagerV1,
         request: zwlr_output_manager_v1::Request,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
@@ -319,8 +326,12 @@ where
         match request {
             zwlr_output_manager_v1::Request::CreateConfiguration { id, serial } => {
                 let g_state = state.output_management_state();
-                let conf = data_init.init(id, OutputConfigurationData { serial });
-                if let Some(client_data) = g_state.clients.get_mut(&client.id()) {
+                let data = OutputConfigurationData {
+                    serial,
+                    manager: manager.clone(),
+                };
+                let conf = data_init.init(id, data);
+                if let Some(client_data) = g_state.clients.get_mut(manager) {
                     if serial != g_state.serial {
                         conf.cancelled();
                     }
@@ -331,15 +342,15 @@ where
                 }
             }
             zwlr_output_manager_v1::Request::Stop => {
-                if let Some(c) = state.output_management_state().clients.remove(&client.id()) {
+                if let Some(c) = state.output_management_state().clients.remove(manager) {
                     c.manager.finished()
                 }
             }
             _ => unreachable!(),
         }
     }
-    fn destroyed(&self, state: &mut D, client: ClientId, _resource: &ZwlrOutputManagerV1) {
-        state.output_management_state().clients.remove(&client);
+    fn destroyed(&self, state: &mut D, _client: ClientId, manager: &ZwlrOutputManagerV1) {
+        state.output_management_state().clients.remove(manager);
     }
 }
 
@@ -352,7 +363,7 @@ where
     fn request(
         &self,
         state: &mut D,
-        client: &Client,
+        _client: &Client,
         conf: &ZwlrOutputConfigurationV1,
         request: zwlr_output_configuration_v1::Request,
         _display: &DisplayHandle,
@@ -366,7 +377,7 @@ where
 
         let new_config = g_state
             .clients
-            .get_mut(&client.id())
+            .get_mut(&self.manager)
             .and_then(|data| data.confs.get_mut(conf));
         if new_config.is_none() {
             error!("OutputConfiguration: request from unknown configuration object");
@@ -374,7 +385,7 @@ where
 
         match request {
             zwlr_output_configuration_v1::Request::EnableHead { id, head } => {
-                let Some(output) = head.data::<OutputId>() else {
+                let Some(HeadData { output, .. }) = head.data::<HeadData>() else {
                     error!("EnableHead: Missing attached output");
                     let _fail = data_init.init(id, OutputConfigurationHeadState::Cancelled);
                     return;
@@ -434,7 +445,7 @@ where
                 if outdated {
                     return;
                 }
-                let Some(output) = head.data::<OutputId>() else {
+                let Some(HeadData { output, .. }) = head.data::<HeadData>() else {
                     error!("DisableHead: missing attached output head name");
                     return;
                 };
@@ -540,7 +551,7 @@ where
             zwlr_output_configuration_v1::Request::Destroy => {
                 g_state
                     .clients
-                    .get_mut(&client.id())
+                    .get_mut(&self.manager)
                     .map(|d| d.confs.remove(conf));
             }
             _ => unreachable!(),
@@ -556,24 +567,25 @@ where
     fn request(
         &self,
         state: &mut D,
-        client: &Client,
+        _client: &Client,
         conf_head: &ZwlrOutputConfigurationHeadV1,
         request: zwlr_output_configuration_head_v1::Request,
         _display: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
         let g_state = state.output_management_state();
-        let Some(client_data) = g_state.clients.get_mut(&client.id()) else {
-            error!("ConfigurationHead: missing client data");
-            return;
-        };
         let OutputConfigurationHeadState::Ok(output_id, conf) = self else {
             warn!("ConfigurationHead: request sent to a cancelled head");
             return;
         };
-        let Some(OutputConfigurationData { serial }) = conf.data::<OutputConfigurationData>()
+        let Some(OutputConfigurationData { serial, manager }) =
+            conf.data::<OutputConfigurationData>()
         else {
             error!("ConfigurationHead: missing serial");
+            return;
+        };
+        let Some(client_data) = g_state.clients.get_mut(manager) else {
+            error!("ConfigurationHead: missing client data");
             return;
         };
         if *serial != g_state.serial {
@@ -737,7 +749,7 @@ where
     }
 }
 
-impl<D> Dispatch2<ZwlrOutputHeadV1, D> for OutputId
+impl<D> Dispatch2<ZwlrOutputHeadV1, D> for HeadData
 where
     D: OutputManagementHandler,
     D: 'static,
@@ -756,9 +768,13 @@ where
             _ => unreachable!(),
         }
     }
-    fn destroyed(&self, state: &mut D, client: ClientId, _resource: &ZwlrOutputHeadV1) {
-        if let Some(c) = state.output_management_state().clients.get_mut(&client) {
-            c.heads.remove(self);
+    fn destroyed(&self, state: &mut D, _client: ClientId, _resource: &ZwlrOutputHeadV1) {
+        if let Some(c) = state
+            .output_management_state()
+            .clients
+            .get_mut(&self.manager)
+        {
+            c.heads.remove(&self.output);
         }
     }
 }
@@ -784,8 +800,8 @@ where
     }
 }
 
-fn notify_removed_head(clients: &mut HashMap<ClientId, ClientData>, head: &OutputId) {
-    for data in clients.values_mut() {
+fn notify_removed_head<'a>(clients: impl Iterator<Item = &'a mut ClientData>, head: &OutputId) {
+    for data in clients {
         if let Some((head, mods)) = data.heads.remove(head) {
             mods.iter().for_each(|m| m.finished());
             head.finished();
@@ -799,8 +815,7 @@ fn notify_new_head(
     conf: &niri_ipc::Output,
 ) {
     let display = &state.display;
-    let clients = &mut state.clients;
-    for data in clients.values_mut() {
+    for data in state.clients.values_mut() {
         if let Some(client) = data.manager.client() {
             send_new_head::<State>(display, &client, data, *output, conf);
         }
@@ -815,12 +830,16 @@ fn send_new_head<D>(
     conf: &niri_ipc::Output,
 ) where
     D: Dispatch<ZwlrOutputModeV1, EmptyData>,
-    D: Dispatch<ZwlrOutputHeadV1, OutputId>,
+    D: Dispatch<ZwlrOutputHeadV1, HeadData>,
     D: OutputManagementHandler,
     D: 'static,
 {
+    let data = HeadData {
+        output,
+        manager: client_data.manager.clone(),
+    };
     let new_head = client
-        .create_resource::<ZwlrOutputHeadV1, _, D>(display, client_data.manager.version(), output)
+        .create_resource::<ZwlrOutputHeadV1, _, D>(display, client_data.manager.version(), data)
         .unwrap();
     client_data.manager.head(&new_head);
     new_head.name(conf.name.clone());
