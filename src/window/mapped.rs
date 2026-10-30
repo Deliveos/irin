@@ -14,7 +14,7 @@ use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_to
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource as _;
-use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Serial, Size, Transform};
 use smithay::wayland::compositor::{remove_pre_commit_hook, with_states, HookId, SurfaceData};
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::{
@@ -606,14 +606,43 @@ impl Mapped {
         &self.last_interactive_resize_start
     }
 
+    /// Returns the area to cast of the window: its surfaces and popups, cropped around the window
+    /// geometry to at most `max_size` rounded up to whole logical pixels, then converted to
+    /// physical pixels rounding outwards. On an axis where the window geometry itself is larger
+    /// than `max_size`, only its start is kept.
+    ///
+    /// The client decides where its subsurfaces and popups go and how large its window geometry
+    /// is (without one set, it's the bounding box of the surface and its subsurfaces), so without
+    /// the crop, the cast buffers could be huge.
+    pub fn cast_bbox(
+        &self,
+        scale: Scale<f64>,
+        max_size: Size<f64, Logical>,
+    ) -> Rectangle<i32, Physical> {
+        let bbox = self.window.bbox_with_popups();
+        let geo = self.window.geometry();
+        let max_size = max_size.to_i32_ceil();
+
+        let (x, w) = crop_axis(
+            (bbox.loc.x, bbox.size.w),
+            (geo.loc.x, geo.size.w),
+            max_size.w,
+        );
+        let (y, h) = crop_axis(
+            (bbox.loc.y, bbox.size.h),
+            (geo.loc.y, geo.size.h),
+            max_size.h,
+        );
+        Rectangle::new(Point::new(x, y), Size::new(w, h)).to_physical_precise_up(scale)
+    }
+
     pub fn render_for_screen_cast<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         scale: Scale<f64>,
+        bbox: Rectangle<i32, Physical>,
         push: &mut dyn FnMut(WindowCastRenderElements<R>),
     ) {
-        let bbox = self.window.bbox_with_popups().to_physical_precise_up(scale);
-
         let has_border_shader = BorderRenderElement::has_shader(renderer);
         let radius = self.geometry_corner_radius();
         let window_size = self
@@ -622,7 +651,7 @@ impl Mapped {
             .to_physical_precise_round(scale)
             .to_logical(scale);
         let radius = radius.fit_to(window_size.w as f32, window_size.h as f32);
-        let location = self.window.geometry().loc.to_f64() - bbox.loc.to_logical(scale);
+        let location = self.window.geometry().loc.to_f64() - bbox.loc.to_f64().to_logical(scale);
 
         let use_border = |elem| {
             if let LayoutElementRenderElement::SolidColor(elem) = &elem {
@@ -1577,5 +1606,51 @@ impl LayoutElement for Mapped {
                 true
             }
         });
+    }
+}
+
+/// Crops the span `(start, len)` to at most `max`, keeping `keep` and splitting the rest between
+/// both sides. When `keep` is longer than `max`, keeps only its first `max`.
+fn crop_axis((start, len): (i32, i32), (keep_start, keep_len): (i32, i32), max: i32) -> (i32, i32) {
+    let max = max.max(0);
+    if len <= max {
+        return (start, len);
+    }
+    if keep_len >= max {
+        return (keep_start, max);
+    }
+
+    let extra = max - keep_len;
+    let before = (keep_start - start).max(0);
+    let after = (start + len - (keep_start + keep_len)).max(0);
+    let take_before = before.min((extra / 2).max(extra - after));
+    let take_after = after.min(extra - take_before);
+    (
+        keep_start - take_before,
+        keep_len + take_before + take_after,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crop_axis_keeps_the_window_and_splits_the_rest() {
+        // Fits: unchanged.
+        assert_eq!(crop_axis((-10, 120), (0, 100), 200), (-10, 120));
+        // Window larger than the limit: the start of the window.
+        assert_eq!(crop_axis((-10, 520), (0, 500), 200), (0, 200));
+        // Without a window geometry, the window is the whole span: still cropped.
+        assert_eq!(crop_axis((0, 16001), (0, 16001), 1000), (0, 1000));
+
+        // A far-away subsurface after the window: the rest goes after it.
+        assert_eq!(crop_axis((0, 16000), (0, 100), 1000), (0, 1000));
+        // And before it.
+        assert_eq!(crop_axis((-16000, 16100), (0, 100), 1000), (-900, 1000));
+        // Both sides want more than half: split evenly.
+        assert_eq!(crop_axis((-5000, 10100), (0, 100), 1000), (-450, 1000));
+        // One side wants less than half: it gets all of it, the other side the rest.
+        assert_eq!(crop_axis((-100, 16100), (0, 100), 1000), (-100, 1000));
     }
 }

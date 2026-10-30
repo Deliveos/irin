@@ -28,4 +28,5 @@ mod session_lock;
 mod tiled_state;
 mod transactions;
 mod virtual_pointer;
+mod window_cast;
 mod window_opening;

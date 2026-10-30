@@ -18,7 +18,7 @@ use crate::dbus::mutter_screen_cast::{self, CursorMode, ScreenCastToNiri, Stream
 use crate::niri::{CastTarget, Niri, OutputRenderElements, PointerRenderElements, State};
 use crate::niri_render_elements;
 use crate::render_helpers::{RenderCtx, RenderTarget};
-use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
+use crate::utils::{get_monotonic_time, output_size, CastSessionId, CastStreamId};
 use crate::window::mapped::{MappedId, WindowCastRenderElements};
 
 mod pw_utils;
@@ -202,10 +202,7 @@ impl State {
             };
 
             let scale = Scale::from(output.current_scale().fractional_scale());
-            let bbox = mapped
-                .window
-                .bbox_with_popups()
-                .to_physical_precise_up(scale);
+            let bbox = mapped.cast_bbox(scale, output_size(output));
 
             match cast.ensure_size(bbox.size) {
                 Ok(CastSizeChange::Ready) => (),
@@ -246,7 +243,7 @@ impl State {
                 }
 
                 let main_start = elements.len();
-                mapped.render_for_screen_cast(renderer, scale, &mut |elem| {
+                mapped.render_for_screen_cast(renderer, scale, bbox, &mut |elem| {
                     elements.push(CastRenderElement::from(elem))
                 });
 
@@ -673,10 +670,7 @@ impl Niri {
                 continue;
             };
 
-            let bbox = mapped
-                .window
-                .bbox_with_popups()
-                .to_physical_precise_up(scale);
+            let bbox = mapped.cast_bbox(scale, output_size(output));
 
             match cast.ensure_size(bbox.size) {
                 Ok(CastSizeChange::Ready) => (),
@@ -714,7 +708,7 @@ impl Niri {
             }
 
             let main_start = elements.len();
-            mapped.render_for_screen_cast(renderer, scale, &mut |elem| {
+            mapped.render_for_screen_cast(renderer, scale, bbox, &mut |elem| {
                 elements.push(CastRenderElement::from(elem))
             });
 
@@ -820,10 +814,7 @@ impl Niri {
             .get(&mapped.window)
             .map(|(o, _)| o)?;
         let scale = Scale::from(output.current_scale().fractional_scale());
-        let bbox = mapped
-            .window
-            .bbox_with_popups()
-            .to_physical_precise_up(scale);
+        let bbox = mapped.cast_bbox(scale, output_size(output));
         let refresh = output.current_mode().unwrap().refresh as u32;
         Some((bbox.size, refresh))
     }
