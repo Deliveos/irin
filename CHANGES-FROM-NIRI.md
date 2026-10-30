@@ -191,6 +191,9 @@ The spawn fix is about a background thread that never finished.
 - **Popups of layer-shell surfaces.**
     niri sends `wl_surface.enter` to a popup of a layer-shell surface only when the layer surfaces of that output are arranged (when one of them commits, maps or unmaps, or the output changes), so a new popup (a bar's menu, an input method popup in a launcher) has no output until then; since the change above, an input method popup on a layer surface also lost its output each time text input was enabled again.
     nori enters the popup on the layer surface's output right away ([#142](https://github.com/Deliveos/nori/pull/142); fixes [#132](https://github.com/Deliveos/nori/issues/132)).
+- **Custom close shader with blocked-out windows.**
+    With a custom `window-close` shader, niri passes the shader the snapshot for the render target, which for a window with `block-out-from` in a screencast is the blocked-out one, but maps it with the size of the normal snapshot; the normal one is larger when the window draws outside its geometry (for example client-side shadows), so there the animation is drawn at the wrong place and size.
+    nori maps each snapshot with its own size ([#230](https://github.com/Deliveos/nori/pull/230); fixes [#177](https://github.com/Deliveos/nori/issues/177)).
 - **Resize animation flash.**
     niri takes the starting snapshot of a resize animation on the commit that acknowledges the resize, and Firefox has already committed its content at the new size by then, so maximizing or restoring Firefox flashes.
     nori takes the snapshot of a window on screen when the resize is sent to it; off-screen windows, or a scale change before the window answers, fall back to niri's behavior, and with resize animations off nori skips this early snapshot (the snapshot on commit is still taken, as in niri) ([#111](https://github.com/Deliveos/nori/pull/111); fixes [#110](https://github.com/Deliveos/nori/issues/110)).
