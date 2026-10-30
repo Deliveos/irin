@@ -271,6 +271,9 @@ Numbers in this section are the issues' measurements or estimates; most come fro
 - **Exit dialog texture.**
     niri uploads the exit confirmation dialog's texture again on every frame it is shown.
     nori uploads it once per scale while the dialog is shown ([9ecf467e](https://github.com/Deliveos/nori/commit/9ecf467ead4c952adfe70d1df72085b028e41f88); fixes [#43](https://github.com/Deliveos/nori/issues/43)).
+- **Config notification.**
+    After the config error notification (or the one about a newly created config) slides in, niri keeps every output redrawing at its refresh rate for the 4 or 8 seconds that it sits still: for one config error on three 144 Hz outputs, 3 × 144 × 4 = 1728 redraws of a still screen.
+    nori redraws only while the notification slides in or out, and once when it should start hiding, with a unit test in `src/ui/config_error_notification.rs` ([#241](https://github.com/Deliveos/nori/pull/241); fixes [#192](https://github.com/Deliveos/nori/issues/192)).
 - **Shadows turned off.**
     niri computes shadow geometry for every tile on every frame even when shadows are off (the default).
     nori skips it when shadows are off ([0d07ecd1](https://github.com/Deliveos/nori/commit/0d07ecd11d434564bb3c58e98be90879fc46cddd); fixes [#44](https://github.com/Deliveos/nori/issues/44)).
