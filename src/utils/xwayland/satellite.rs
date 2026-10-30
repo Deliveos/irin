@@ -2,8 +2,9 @@ use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+use std::{io, thread};
 
 use calloop::channel::Sender;
 use calloop::generic::Generic;
@@ -13,6 +14,13 @@ use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
 use crate::niri::State;
 use crate::utils::expand_home;
 use crate::utils::xwayland::X11Connection;
+
+/// How long the on-demand activation test may take.
+///
+/// The test runs on the main thread, at startup and on a config reload that changes the
+/// `xwayland-satellite` section while the integration isn't running, and normally takes a few
+/// milliseconds. A configured path to a program that doesn't exit would otherwise freeze niri.
+const TEST_ONDEMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct Satellite {
     x11: X11Connection,
@@ -108,8 +116,15 @@ fn test_ondemand(path: &str) -> bool {
         }
     };
 
-    let status = match child.wait() {
-        Ok(status) => status,
+    let status = match wait_with_timeout(&mut child, TEST_ONDEMAND_TIMEOUT) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            warn!(
+                "xwayland-satellite at {path:?} didn't exit within {TEST_ONDEMAND_TIMEOUT:?} \
+                 when testing on-demand activation, disabling integration"
+            );
+            return false;
+        }
         Err(err) => {
             warn!("error waiting for xwayland-satellite, disabling integration: {err}");
             return false;
@@ -122,6 +137,24 @@ fn test_ondemand(path: &str) -> bool {
     }
 
     true
+}
+
+/// Waits for the child to exit, or kills it after the timeout and returns `None`.
+fn wait_with_timeout(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 // When xwayland-satellite fails to start and accept a connection on the socket, the socket will
@@ -321,4 +354,24 @@ fn spawn_and_wait(
 
     // This is most likely a crash, hence warn!().
     warn!("xwayland-satellite exited with: {status}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_with_timeout_kills_a_child_that_doesnt_exit() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let status = wait_with_timeout(&mut child, Duration::from_secs(30));
+        assert!(status.unwrap().unwrap().success());
+
+        let mut child = Command::new("sleep").arg("1000").spawn().unwrap();
+        let start = Instant::now();
+        let status = wait_with_timeout(&mut child, Duration::from_millis(100));
+        assert!(status.unwrap().is_none());
+        assert!(start.elapsed() < Duration::from_secs(30));
+        // The child was killed and reaped.
+        assert!(child.try_wait().unwrap().is_some());
+    }
 }
