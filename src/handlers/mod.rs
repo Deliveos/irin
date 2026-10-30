@@ -84,6 +84,7 @@ use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerSt
 use crate::protocols::mutter_x11_interop::MutterX11InteropHandler;
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementManagerState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::utils::listening_socket::{insert_listening_socket, OnAcceptError};
 use crate::utils::{output_size, send_scale_transform};
 
 pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -522,17 +523,28 @@ pub fn configure_lock_surface(surface: &LockSurface, output: &Output) {
 
 impl SecurityContextHandler for State {
     fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
-        self.niri
-            .event_loop
-            .insert_source(source, move |client, _, state| {
+        let name = format!("the security context socket of {:?}", context.app_id);
+        let res = insert_listening_socket(
+            &self.niri.event_loop,
+            name,
+            // The socket comes from a client, so an error probably means it's unusable. The source
+            // also has two fds, so it can't be paused safely.
+            OnAcceptError::Remove,
+            source,
+            move |client, _, state| {
                 trace!("inserting a new restricted client, context={context:?}");
                 state.niri.insert_client(NewClient {
                     client,
                     restricted: true,
                     credentials_unknown: false,
                 });
-            })
-            .unwrap();
+            },
+        );
+
+        // For example, the client sent a regular file, which can't be polled.
+        if let Err(err) = res {
+            warn!("error adding a security context socket: {:?}", err.error);
+        }
     }
 }
 

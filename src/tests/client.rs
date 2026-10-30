@@ -20,6 +20,8 @@ use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_se
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_session_lock_v1::{self, ExtSessionLockV1};
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
+use smithay::reexports::wayland_protocols::wp::security_context::v1::client::wp_security_context_manager_v1::WpSecurityContextManagerV1;
+use smithay::reexports::wayland_protocols::wp::security_context::v1::client::wp_security_context_v1::WpSecurityContextV1;
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
@@ -101,6 +103,7 @@ pub struct State {
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub foreign_toplevel_list: Option<ExtForeignToplevelListV1>,
     pub output_manager: Option<ZwlrOutputManagerV1>,
+    pub security_context_manager: Option<WpSecurityContextManagerV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
@@ -365,6 +368,7 @@ impl Client {
             ksim: None,
             foreign_toplevel_list: None,
             output_manager: None,
+            security_context_manager: None,
             windows: Vec::new(),
             layers: Vec::new(),
             foreign_toplevels: Vec::new(),
@@ -913,6 +917,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ZwlrOutputManagerV1::interface().name {
                     let version = min(version, ZwlrOutputManagerV1::interface().version);
                     state.output_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == WpSecurityContextManagerV1::interface().name {
+                    let version = min(version, WpSecurityContextManagerV1::interface().version);
+                    state.security_context_manager = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -1150,6 +1157,8 @@ wayland_client::delegate_noop!(State: ignore WlSubcompositor);
 wayland_client::delegate_noop!(State: ignore WlSubsurface);
 wayland_client::delegate_noop!(State: ignore XdgPositioner);
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerV1);
+wayland_client::delegate_noop!(State: WpSecurityContextManagerV1);
+wayland_client::delegate_noop!(State: WpSecurityContextV1);
 
 impl Dispatch<WlSurface, ()> for State {
     fn event(
