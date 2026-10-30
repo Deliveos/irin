@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::{env, io, process};
 
 use anyhow::Context;
-use async_channel::{Receiver, Sender, TrySendError};
+use async_channel::{Receiver, Sender};
 use calloop::futures::Scheduler;
 use calloop::io::Async;
 use directories::BaseDirs;
@@ -39,8 +39,12 @@ use crate::utils::{version, with_toplevel_role};
 use crate::window::Mapped;
 
 // If an event stream client fails to read events fast enough that we accumulate more than this
-// number in our buffer, we drop that event stream client.
-const EVENT_STREAM_BUFFER_SIZE: usize = 64;
+// many bytes of events in our buffer, we drop that event stream client.
+//
+// The client tasks run on our event loop, so they can't write anything while one refresh produces
+// its events. The limit is in bytes rather than events so that such a burst fits, like one event
+// for each window when many windows change at once.
+const EVENT_STREAM_BUFFER_SIZE: usize = 1024 * 1024;
 
 // A client that sends more than this without a newline is dropped, so that it can't make us buffer
 // without limit. Spawn requests carry a whole argv, which Linux allows up to 6 MiB with a large
@@ -65,14 +69,49 @@ struct ClientCtx {
 }
 
 struct EventStreamClient {
-    events: Receiver<Event>,
+    /// Serialized events, each ending with a newline.
+    events: Receiver<Rc<[u8]>>,
+    /// Bytes of events in `events` and being written.
+    queued_bytes: Rc<Cell<usize>>,
     disconnect: Receiver<()>,
     write: Box<dyn AsyncWrite + Unpin>,
 }
 
 struct EventStreamSender {
-    events: Sender<Event>,
+    events: Sender<Rc<[u8]>>,
+    queued_bytes: Rc<Cell<usize>>,
     disconnect: Sender<()>,
+}
+
+impl EventStreamSender {
+    /// Queues a serialized event, returns `false` if the client should be dropped.
+    fn send(&self, event: Rc<[u8]>) -> bool {
+        if self.queued_bytes.get() > EVENT_STREAM_BUFFER_SIZE {
+            warn!("disconnecting IPC event stream client because it is reading events too slowly");
+            return false;
+        }
+
+        self.queue(event)
+    }
+
+    /// Queues a serialized event without checking the limit, returns `false` if the client is
+    /// gone.
+    fn queue(&self, event: Rc<[u8]>) -> bool {
+        let len = event.len();
+        // The channel is unbounded, so this fails only when it's closed.
+        if self.events.try_send(event).is_err() {
+            return false;
+        }
+
+        self.queued_bytes.set(self.queued_bytes.get() + len);
+        true
+    }
+}
+
+fn serialize_event(event: &Event) -> anyhow::Result<Rc<[u8]>> {
+    let mut buf = serde_json::to_vec(event).context("error formatting event")?;
+    buf.push(b'\n');
+    Ok(Rc::from(buf))
 }
 
 impl IpcServer {
@@ -123,20 +162,30 @@ impl IpcServer {
         self.event_stream_state.borrow()
     }
 
+    #[cfg(test)]
+    pub fn event_stream_count(&self) -> usize {
+        self.event_streams.borrow().len()
+    }
+
     fn send_event(&self, event: Event) {
         let mut streams = self.event_streams.borrow_mut();
+        if streams.is_empty() {
+            return;
+        }
+
+        // Serialize once for all clients.
+        let event = match serialize_event(&event) {
+            Ok(event) => event,
+            Err(err) => {
+                warn!("error sending IPC event: {err:?}");
+                return;
+            }
+        };
+
         let mut to_remove = Vec::new();
-        for (idx, stream) in streams.iter_mut().enumerate() {
-            match stream.events.try_send(event.clone()) {
-                Ok(()) => (),
-                Err(TrySendError::Closed(_)) => to_remove.push(idx),
-                Err(TrySendError::Full(_)) => {
-                    warn!(
-                        "disconnecting IPC event stream client \
-                         because it is reading events too slowly"
-                    );
-                    to_remove.push(idx);
-                }
+        for (idx, stream) in streams.iter().enumerate() {
+            if !stream.send(event.clone()) {
+                to_remove.push(idx);
             }
         }
 
@@ -249,14 +298,21 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
         write.write_all(&buf).await.context("error writing reply")?;
 
         if requested_event_stream {
-            let (events_tx, events_rx) = async_channel::bounded(EVENT_STREAM_BUFFER_SIZE);
+            let (events_tx, events_rx) = async_channel::unbounded();
             let (disconnect_tx, disconnect_rx) = async_channel::bounded(1);
+            let queued_bytes = Rc::new(Cell::new(0));
 
             // Spawn a task for the client.
             let client = EventStreamClient {
                 events: events_rx,
+                queued_bytes: queued_bytes.clone(),
                 disconnect: disconnect_rx,
                 write: Box::new(write) as _,
+            };
+            let sender = EventStreamSender {
+                events: events_tx,
+                queued_bytes,
+                disconnect: disconnect_tx,
             };
             let future = async move {
                 if let Err(err) = handle_event_stream_client(client).await {
@@ -267,25 +323,20 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
                 warn!("error scheduling IPC event stream future: {err:?}");
             }
 
-            // Send the initial state.
+            // Send the initial state. It can be larger than the limit with many windows, so
+            // don't check the limit here.
             {
                 let state = ctx.event_stream_state.borrow();
                 for event in state.replicate() {
-                    events_tx
-                        .try_send(event)
-                        .expect("initial event burst had more events than buffer size");
+                    let event = serialize_event(&event)?;
+                    if !sender.queue(event) {
+                        return Ok(());
+                    }
                 }
             }
 
             // Add it to the list.
-            {
-                let mut streams = ctx.event_streams.borrow_mut();
-                let sender = EventStreamSender {
-                    events: events_tx,
-                    disconnect: disconnect_tx,
-                };
-                streams.push(sender);
-            }
+            ctx.event_streams.borrow_mut().push(sender);
 
             return Ok(());
         }
@@ -512,18 +563,17 @@ fn validate_action(action: &Action) -> Result<(), String> {
 async fn handle_event_stream_client(client: EventStreamClient) -> anyhow::Result<()> {
     let EventStreamClient {
         events,
+        queued_bytes,
         disconnect,
         mut write,
     } = client;
 
     while let Ok(event) = events.recv().await {
-        let mut buf = serde_json::to_vec(&event).context("error formatting event")?;
-        buf.push(b'\n');
-
         let res = select_biased! {
             _ = disconnect.recv().fuse() => return Ok(()),
-            res = write.write_all(&buf).fuse() => res,
+            res = write.write_all(&event).fuse() => res,
         };
+        queued_bytes.set(queued_bytes.get().saturating_sub(event.len()));
 
         match res {
             Ok(()) => (),
