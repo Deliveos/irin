@@ -3751,7 +3751,13 @@ impl State {
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
+        let mut tool_grabbed = false;
         if let Some(tool) = tool {
+            // DownGrab has no visuals of its own. smithay starts it on a tip press that no grab of
+            // ours handles.
+            tool_grabbed = tool
+                .with_grab(|_, grab| !grab.as_any().is::<tablet::tool::DownGrab<State>>())
+                .unwrap_or(false);
             let time = event.time();
 
             let frame = tablet::tool::AxisFrame {
@@ -3786,9 +3792,13 @@ impl State {
             self.niri.tablet_cursor_location = Some(pos);
         }
 
-        // Redraw to update the cursor position.
-        // FIXME: redraw only outputs overlapping the cursor.
-        self.niri.queue_redraw_all();
+        // refresh_pointer_redraws() redraws the outputs where the cursor moved. Like pointer
+        // grabs, tool grabs (moving a window, the overview) can change any output.
+        if tool_grabbed {
+            self.niri.queue_redraw_all();
+        } else {
+            self.niri.queue_redraw_pointer_moved();
+        }
     }
 
     fn on_tablet_tool_tip<I: InputBackend>(&mut self, event: I::TabletToolTipEvent)
