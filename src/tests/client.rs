@@ -146,6 +146,7 @@ pub enum OutputConfigurationResult {
 pub struct OutputMode {
     pub size: (i32, i32),
     pub refresh: i32,
+    pub preferred: bool,
 }
 
 pub struct Window {
@@ -1586,7 +1587,7 @@ impl Dispatch<ZwlrOutputModeV1, ()> for State {
                 output_mode.size = (width, height)
             }
             zwlr_output_mode_v1::Event::Refresh { refresh } => output_mode.refresh = refresh,
-            zwlr_output_mode_v1::Event::Preferred => (),
+            zwlr_output_mode_v1::Event::Preferred => output_mode.preferred = true,
             zwlr_output_mode_v1::Event::Finished => {
                 state.output_modes.remove(mode);
             }

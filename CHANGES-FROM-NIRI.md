@@ -191,6 +191,9 @@ The spawn fix is about a background thread that never finished.
 - **wlr-output-management bound twice by one client.**
     niri keeps one wlr-output-management state per client, so when one client binds the manager twice (for example two modules of one panel), the second binding replaces the first: the first manager stops getting changes, `set_mode` with a mode of the first manager is a protocol error that disconnects the client, and releasing a head or stopping either manager acts on the second one.
     nori keeps the state per manager ([#223](https://github.com/Deliveos/nori/pull/223); fixes [#169](https://github.com/Deliveos/nori/issues/169)).
+- **Preferred mode after the mode list changes.**
+    When the mode list changes, niri rewrites the wlr-output-management clients' existing mode objects in place, by position, and the protocol can't take the `preferred` flag off a mode object, so after adding or removing a custom mode a running client sees another mode as preferred.
+    nori replaces all mode objects of the head when its mode list changes, with a test in `src/tests/output_management.rs` ([#245](https://github.com/Deliveos/nori/pull/245); fixes [#195](https://github.com/Deliveos/nori/issues/195)).
 
 ### Screenshots
 
