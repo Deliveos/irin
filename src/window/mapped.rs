@@ -732,6 +732,7 @@ impl Drop for Mapped {
 
 impl LayoutElement for Mapped {
     type Id = Window;
+    type ParentKey = WlSurface;
 
     fn id(&self) -> &Self::Id {
         &self.window
@@ -1484,8 +1485,12 @@ impl LayoutElement for Mapped {
         self.needs_configure = true;
     }
 
-    fn is_child_of(&self, parent: &Self) -> bool {
-        self.toplevel().parent().as_ref() == Some(parent.toplevel().wl_surface())
+    fn key_as_parent(&self) -> WlSurface {
+        self.toplevel().wl_surface().clone()
+    }
+
+    fn parent_key(&self) -> Option<WlSurface> {
+        self.toplevel().parent()
     }
 
     fn refresh(&self) {

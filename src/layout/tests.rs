@@ -151,6 +151,7 @@ impl TestWindow {
 
 impl LayoutElement for TestWindow {
     type Id = usize;
+    type ParentKey = usize;
 
     fn id(&self) -> &Self::Id {
         &self.0.id
@@ -255,8 +256,12 @@ impl LayoutElement for TestWindow {
         self.0.is_pending_windowed_fullscreen.set(value);
     }
 
-    fn is_child_of(&self, parent: &Self) -> bool {
-        self.0.parent_id.get() == Some(parent.0.id)
+    fn key_as_parent(&self) -> usize {
+        self.0.id
+    }
+
+    fn parent_key(&self) -> Option<usize> {
+        self.0.parent_id.get()
     }
 
     fn refresh(&self) {}
@@ -3393,6 +3398,33 @@ fn stacking_set_parent_brings_up_child() {
     ];
 
     check_ops(ops);
+}
+
+#[test]
+fn stacking_activate_keeps_order_of_descendants() {
+    let floating = |id, parent_id| Op::AddWindow {
+        params: TestWindowParams {
+            is_floating: true,
+            parent_id,
+            ..TestWindowParams::new(id)
+        },
+    };
+    let ops = [
+        Op::AddOutput(0),
+        floating(0, None),
+        floating(1, Some(0)),
+        floating(2, None),
+        floating(3, Some(1)),
+        floating(4, Some(0)),
+        floating(5, None),
+        Op::FocusWindow(0),
+    ];
+
+    let layout = check_ops(ops);
+    let ws = layout.active_workspace().unwrap();
+    let order: Vec<_> = ws.windows().map(|win| win.0.id).collect();
+    // Front to back: the descendants in their previous order, then the window, then the others.
+    assert_eq!(order, [4, 3, 1, 0, 5, 2]);
 }
 
 #[test]

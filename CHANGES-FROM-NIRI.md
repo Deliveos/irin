@@ -370,6 +370,14 @@ The spawn fix is about a background thread that never finished.
 
 Numbers in this section are the issues' measurements or estimates; most come from a benchmark that is kept outside the repository ([#58](https://github.com/Deliveos/nori/issues/58)).
 
+### Window stacking
+
+- **Floating windows with many child windows.**
+    When niri raises a floating window on focus, adds a floating window, or a client makes a floating window the parent of another window with `xdg_toplevel.set_parent`, it brings that window's descendants right above it.
+    It finds them by comparing every window below it with the window and with each descendant found so far, and then moves each descendant up with a remove and an insert in the tile list, which shifts the rest of the list each time; a floating tile is 13544 bytes (measured with `size_of` on nori's `main`).
+    So a client with many floating child windows makes this work grow with the square of their number on the main thread.
+    nori finds the descendants in one pass with a set of their parents and moves them up with one stable partition of the window and the tiles down to the last descendant ([#226](https://github.com/Deliveos/nori/pull/226); fixes [#160](https://github.com/Deliveos/nori/issues/160)).
+
 ### Rendering and redraws
 
 - **Off-screen columns.**
