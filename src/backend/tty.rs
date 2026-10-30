@@ -2054,8 +2054,10 @@ impl Tty {
 
     pub fn suspend(&self) {
         #[cfg(feature = "dbus")]
-        if let Err(err) = suspend() {
-            warn!("error suspending: {err:?}");
+        {
+            static IN_PROGRESS: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            suspend_on_thread(&IN_PROGRESS, suspend);
         }
     }
 
@@ -3053,6 +3055,39 @@ fn refresh_interval(mode: DrmMode) -> Duration {
     Duration::from_nanos(refresh_interval)
 }
 
+/// Runs the suspend call on a thread, unless one is still running.
+///
+/// The call waits for logind, and with `interactive = true` logind can ask polkit to authenticate
+/// the user, whose agent is our own client, so it mustn't block the main thread.
+#[cfg(feature = "dbus")]
+fn suspend_on_thread(
+    in_progress: &'static std::sync::atomic::AtomicBool,
+    suspend: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) {
+    use std::sync::atomic::Ordering;
+
+    if in_progress.swap(true, Ordering::SeqCst) {
+        debug!("a suspend call is still running, ignoring");
+        return;
+    }
+
+    let res = std::thread::Builder::new()
+        .name("Logind Suspend".to_owned())
+        .spawn(move || {
+            let _span = tracy_client::span!("suspend");
+
+            if let Err(err) = suspend() {
+                warn!("error suspending: {err:?}");
+            }
+            in_progress.store(false, Ordering::SeqCst);
+        });
+
+    if let Err(err) = res {
+        warn!("error spawning a thread to suspend: {err:?}");
+        in_progress.store(false, Ordering::SeqCst);
+    }
+}
+
 #[cfg(feature = "dbus")]
 fn suspend() -> anyhow::Result<()> {
     let conn = zbus::blocking::Connection::system().context("error connecting to system bus")?;
@@ -3645,6 +3680,48 @@ mod tests {
     use niri_ipc::{HSyncPolarity, VSyncPolarity};
 
     use crate::backend::tty::{calculate_drm_mode_from_modeline, calculate_mode_cvt};
+
+    #[cfg(feature = "dbus")]
+    #[test]
+    fn suspend_runs_on_a_thread_once_at_a_time() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use super::suspend_on_thread;
+
+        static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel::<()>();
+        // Returns without waiting for the call, which blocks until finish_tx sends.
+        suspend_on_thread(&IN_PROGRESS, move || {
+            started_tx.send(()).unwrap();
+            let _ = finish_rx.recv();
+            Ok(())
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        // A second call while the first one runs is ignored.
+        let (second_tx, second_rx) = mpsc::channel();
+        suspend_on_thread(&IN_PROGRESS, move || {
+            second_tx.send(()).unwrap();
+            Ok(())
+        });
+        assert!(second_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+        // After the first call returns, suspending works again.
+        finish_tx.send(()).unwrap();
+        while IN_PROGRESS.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (third_tx, third_rx) = mpsc::channel();
+        suspend_on_thread(&IN_PROGRESS, move || {
+            third_tx.send(()).unwrap();
+            Ok(())
+        });
+        third_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
 
     #[test]
     fn test_calculate_drmmode_from_modeline() {

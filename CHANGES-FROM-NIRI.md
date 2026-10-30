@@ -108,7 +108,7 @@ Entries added after these say in the entry itself where their test is, or that t
 
 ## Freeze and hang fixes
 
-The gamma and blur fixes follow rule 2 in [AGENTS.md](AGENTS.md#3-golden-rules): don't block the main thread.
+The gamma, blur and suspend fixes follow rule 2 in [AGENTS.md](AGENTS.md#3-golden-rules): don't block the main thread.
 The spawn fix is about a background thread that never finished.
 
 - **Spawning a program whose exec fails.**
@@ -122,6 +122,9 @@ The spawn fix is about a background thread that never finished.
     niri converts an ext-background-effect blur region into non-overlapping rectangles on the render path, with no limit on the number of rectangles, and any client can use that protocol.
     In the issue's measurement, 4000 rectangles (about 100 KB of requests) took 9.8 seconds and produced 16 million rectangles.
     For regions with more than 64 rectangles (added and subtracted together), nori blurs the bounding box of the added rectangles instead, so holes in such a region are blurred too ([9a986ef6](https://github.com/Deliveos/nori/commit/9a986ef6e37cf5c325bd262edb64c68e82a38ea1); fixes [#7](https://github.com/Deliveos/nori/issues/7)).
+- **The suspend action.**
+    niri calls logind's `Suspend` on the main thread over a new system bus connection and waits for the reply, so a slow system bus stalls the compositor, and with `interactive = true` logind can wait for polkit, whose authentication agent is a client of the stalled compositor.
+    nori makes the call on a thread, and ignores further suspend actions while one call is still running ([#217](https://github.com/Deliveos/nori/pull/217); fixes [#185](https://github.com/Deliveos/nori/issues/185)).
 
 ## Security and the lock screen
 
