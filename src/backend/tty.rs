@@ -1009,6 +1009,7 @@ impl Tty {
         };
 
         let mut added = Vec::new();
+        let mut changed = Vec::new();
         let mut removed = Vec::new();
         for event in scan_result {
             match event {
@@ -1056,8 +1057,9 @@ impl Tty {
                         warn!("changed connector missing from known crtcs");
                     }
 
-                    // We don't actually need to do anything here; on_output_config_changed() will
-                    // take care of picking a new mode if needed.
+                    // on_output_config_changed() will take care of picking a new mode if needed.
+                    // The name can change too, when the EDID was read after Connected.
+                    changed.push((crtc, name));
                 }
                 _ => (),
             }
@@ -1079,34 +1081,55 @@ impl Tty {
         }
 
         for (crtc, mut info) in added {
-            // Make/model/serial can match exactly between different physical monitors. This doesn't
-            // happen often, but our Layout does not support such duplicates and will panic.
-            //
-            // As a workaround, search for duplicates, and unname the new connectors if one is
-            // found. Connector names are always unique.
-            let name = &mut info.name;
-            let formatted = name.format_make_model_serial_or_connector();
-            for info in self.devices.values().flat_map(|d| d.known_crtcs.values()) {
-                if info.name.matches(&formatted) {
-                    let connector = mem::take(&mut name.connector);
-                    warn!(
-                        "new connector {connector} duplicates make/model/serial \
-                         of existing connector {}, unnaming",
-                        info.name.connector,
-                    );
-                    *name = OutputName {
-                        connector,
-                        make: None,
-                        model: None,
-                        serial: None,
-                    };
-                    break;
-                }
-            }
+            let known = self.devices.values().flat_map(|d| d.known_crtcs.values());
+            unname_if_duplicate(&mut info.name, known);
 
             // Insert it right away so next added connector will check against this one too.
             let device = self.devices.get_mut(&node).unwrap();
             device.known_crtcs.insert(crtc, info);
+        }
+
+        for (crtc, mut name) in changed {
+            // Keep the name of an existing output. Before the EDID was read the connector usually
+            // has no modes, so there's no output yet, and the new name is used when it's created.
+            // An output created before the EDID was read (from fallback modes, a custom mode or a
+            // modeline) keeps its name without make/model/serial.
+            let device = &self.devices[&node];
+            if device.surfaces.contains_key(&crtc) {
+                continue;
+            }
+            let Some(info) = device.known_crtcs.get(&crtc) else {
+                continue;
+            };
+            let old = &info.name;
+            if !takes_changed_name(old, &name) {
+                continue;
+            }
+
+            let known = self.devices.iter().flat_map(|(n, d)| {
+                let others = d
+                    .known_crtcs
+                    .iter()
+                    .filter(move |(c, _)| *n != node || **c != crtc);
+                others.map(|(_, info)| info)
+            });
+            unname_if_duplicate(&mut name, known);
+            // A duplicate is unnamed, which can leave the known name as it was.
+            if (&old.make, &old.model, &old.serial) == (&name.make, &name.model, &name.serial) {
+                continue;
+            }
+
+            debug!(
+                "updating name of connector {}: \"{}\"",
+                &name.connector,
+                name.format_make_model_serial(),
+            );
+            let device = self.devices.get_mut(&node).unwrap();
+            let info = device.known_crtcs.get_mut(&crtc).unwrap();
+            info.name = name;
+            // wlr-output-management sends make, model and serial only for a new head, so a new id
+            // makes it recreate the head.
+            info.id = OutputId::next();
         }
 
         // If the device was just added or resumed, we need to cleanup any disconnected connectors
@@ -3691,6 +3714,46 @@ fn make_output_name(
     }
 }
 
+/// Returns whether a changed connector takes its new name instead of the known one.
+///
+/// The new name is taken when its make/model/serial differ, but not when it has none of them: the
+/// EDID read can fail on a later probe while the connector stays connected, and dropping the known
+/// make/model/serial would stop config sections that use them (like one that turns the output off)
+/// from matching.
+fn takes_changed_name(known: &OutputName, new: &OutputName) -> bool {
+    if new.make.is_none() && new.model.is_none() && new.serial.is_none() {
+        return false;
+    }
+
+    (&known.make, &known.model, &known.serial) != (&new.make, &new.model, &new.serial)
+}
+
+/// Unnames a new or changed connector if a known connector has the same make/model/serial.
+///
+/// Make/model/serial can match exactly between different physical monitors. This doesn't happen
+/// often, but our Layout does not support such duplicates and will panic. Connector names are
+/// always unique.
+fn unname_if_duplicate<'a>(name: &mut OutputName, known: impl Iterator<Item = &'a CrtcInfo>) {
+    let formatted = name.format_make_model_serial_or_connector();
+    for info in known {
+        if info.name.matches(&formatted) {
+            let connector = mem::take(&mut name.connector);
+            warn!(
+                "connector {connector} duplicates make/model/serial \
+                 of existing connector {}, unnaming",
+                info.name.connector,
+            );
+            *name = OutputName {
+                connector,
+                make: None,
+                model: None,
+                serial: None,
+            };
+            break;
+        }
+    }
+}
+
 /// Initializes the libinput plugin system.
 ///
 /// # Safety
@@ -3739,9 +3802,12 @@ unsafe fn init_libinput_plugin_system(libinput: &Libinput) {
 mod tests {
     use insta::assert_debug_snapshot;
     use niri_config::output::Modeline;
+    use niri_config::OutputName;
     use niri_ipc::{HSyncPolarity, VSyncPolarity};
 
-    use crate::backend::tty::{calculate_drm_mode_from_modeline, calculate_mode_cvt};
+    use crate::backend::tty::{
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, takes_changed_name,
+    };
 
     #[cfg(feature = "dbus")]
     #[test]
@@ -3931,5 +3997,28 @@ mod tests {
         for (width, height) in [(u16::MAX, u16::MAX), (u16::MAX, 1), (1, u16::MAX)] {
             calculate_mode_cvt(width, height, 60.0);
         }
+    }
+
+    #[test]
+    fn changed_connector_name() {
+        let name = |make: Option<&str>, model: Option<&str>, serial: Option<&str>| OutputName {
+            connector: String::from("DP-3"),
+            make: make.map(String::from),
+            model: model.map(String::from),
+            serial: serial.map(String::from),
+        };
+        let without_edid = name(None, None, None);
+        let dell = name(Some("Dell Inc."), Some("DELL U2720Q"), Some("ABC123"));
+        let lg = name(Some("LG Electronics"), Some("LG ULTRAGEAR"), None);
+
+        // The EDID was read after Connected.
+        assert!(takes_changed_name(&without_edid, &dell));
+        // The EDID read failed on a later probe: keep the known make/model/serial.
+        assert!(!takes_changed_name(&dell, &without_edid));
+        // Another monitor's EDID on the same connector.
+        assert!(takes_changed_name(&dell, &lg));
+        // Unchanged.
+        assert!(!takes_changed_name(&dell, &dell));
+        assert!(!takes_changed_name(&without_edid, &without_edid));
     }
 }
