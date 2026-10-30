@@ -567,6 +567,8 @@ pub struct OutputState {
     screen_transition: Option<ScreenTransition>,
     /// Damage tracker used for the debug damage visualization.
     pub debug_damage_tracker: OutputDamageTracker,
+    /// Timer that redraws the output when an animated cursor on it shows its next frame.
+    pub cursor_frame_timer: Option<RegistrationToken>,
 }
 
 #[derive(Debug, Default)]
@@ -3330,6 +3332,7 @@ impl Niri {
             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
             screen_transition: None,
             debug_damage_tracker: OutputDamageTracker::from_output(&output),
+            cursor_frame_timer: None,
         };
         let rv = self.output_state.insert(output.clone(), state);
         assert!(rv.is_none(), "output was already tracked");
@@ -3372,6 +3375,9 @@ impl Niri {
             RedrawState::WaitingForVBlank { .. } => (),
             RedrawState::WaitingForEstimatedVBlank(token) => self.event_loop.remove(token),
             RedrawState::WaitingForEstimatedVBlankAndQueued(token) => self.event_loop.remove(token),
+        }
+        if let Some(token) = state.cursor_frame_timer {
+            self.event_loop.remove(token);
         }
 
         self.stop_casts_for_target(CastTarget::output(output));
@@ -5172,6 +5178,15 @@ impl Niri {
 
         self.update_render_elements(Some(output));
 
+        // The animation time for the cursor frame timer below. Taken before the render picks the
+        // cursor frame, so that the timer can't be armed for the end of a later frame than the one
+        // shown, and the timer's deadline counts from it, so that the render time doesn't delay
+        // the next frame.
+        let cursor_sample_time = Instant::now();
+        let cursor_millis = cursor_sample_time
+            .saturating_duration_since(self.start_time)
+            .as_millis() as u32;
+
         let mut res = RenderResult::Skipped;
         if self.monitors_active {
             let state = self.output_state.get_mut(output).unwrap();
@@ -5182,13 +5197,6 @@ impl Niri {
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= state.screen_transition.is_some();
-
-            // Also keep redrawing if the current cursor is animated, but only where it's shown.
-            if !state.unfinished_animations_remain && state.cursor_rect.is_some() {
-                state.unfinished_animations_remain = self
-                    .cursor_manager
-                    .is_current_cursor_animated(output.current_scale().integer_scale());
-            }
 
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {
@@ -5204,6 +5212,44 @@ impl Niri {
 
         let is_locked = self.is_locked();
         let state = self.output_state.get_mut(output).unwrap();
+
+        // Redraw when an animated cursor shows its next frame, but only where it's shown. Its
+        // frames usually last longer than a refresh cycle, so don't redraw on every one.
+        //
+        // Not after a skipped render that queued no estimated vblank: while the session is on
+        // another VT, while the monitors are off, or after an error creating the renderer. The
+        // timer would keep the output redrawing for nothing then. Activating the session or the
+        // monitors redraws all outputs, which arms the timer again. A render skipped after an error
+        // rendering or queueing the frame does queue an estimated vblank, and the timer retries it.
+        if let Some(token) = state.cursor_frame_timer.take() {
+            self.event_loop.remove(token);
+        }
+        let vblank_follows = res != RenderResult::Skipped
+            || matches!(
+                state.redraw_state,
+                RedrawState::WaitingForEstimatedVBlank(_)
+            );
+        if vblank_follows && !state.unfinished_animations_remain && state.cursor_rect.is_some() {
+            let scale = output.current_scale().integer_scale();
+            let delay = self
+                .cursor_manager
+                .time_to_next_cursor_frame(scale, cursor_millis);
+            if let Some(delay) = delay {
+                let output = output.clone();
+                let timer = Timer::from_deadline(cursor_sample_time + delay);
+                let inserted = self.event_loop.insert_source(timer, move |_, _, state| {
+                    if let Some(output_state) = state.niri.output_state.get_mut(&output) {
+                        output_state.cursor_frame_timer = None;
+                        state.niri.queue_redraw(&output);
+                    }
+                    TimeoutAction::Drop
+                });
+                match inserted {
+                    Ok(token) => state.cursor_frame_timer = Some(token),
+                    Err(err) => warn!("error inserting the cursor frame timer: {err:?}"),
+                }
+            }
+        }
 
         if res == RenderResult::Skipped {
             // Update the redraw state on failed render.
