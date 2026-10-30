@@ -891,3 +891,297 @@ post-map configures:
     let _guard = settings.bind_to_scope();
     assert_snapshot!(snapshot);
 }
+
+#[test]
+fn maximize_and_fullscreen_after_initial_configure_use_target_workspace() {
+    let config = Config::parse_mem(
+        r##"
+workspace "ws-2" {
+    open-on-output "headless-2"
+}
+
+window-rule {
+    open-on-workspace "ws-2"
+}
+"##,
+    )
+    .unwrap();
+
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1280, 720));
+
+    // One window asks to be maximized and the other to be fullscreen, so that each request is
+    // tested on its own.
+    let id = f.add_client();
+    let mut surfaces = Vec::new();
+    for _ in 0..2 {
+        let window = f.client(id).create_window();
+        surfaces.push(window.surface.clone());
+        window.commit();
+    }
+    f.roundtrip(id);
+
+    // headless-2 isn't connected yet, so ws-2 is on headless-1.
+    for surface in &surfaces {
+        let window = f.client(id).window(surface);
+        assert_eq!(
+            window.format_recent_configures(),
+            "size: 616 × 688, bounds: 1248 × 688, states: []"
+        );
+    }
+
+    // Now ws-2 moves to headless-2, where the windows will map.
+    f.add_output(2, (1920, 1080));
+    f.roundtrip(id);
+
+    let window = f.client(id).window(&surfaces[0]);
+    window.set_maximized();
+    f.roundtrip(id);
+    let window = f.client(id).window(&surfaces[0]);
+    assert_snapshot!(
+        window.format_recent_configures(),
+        @"size: 1920 × 1080, bounds: 1888 × 1048, states: [Maximized]"
+    );
+
+    let window = f.client(id).window(&surfaces[1]);
+    window.set_fullscreen(None);
+    f.roundtrip(id);
+    let window = f.client(id).window(&surfaces[1]);
+    assert_snapshot!(
+        window.format_recent_configures(),
+        @"size: 1920 × 1080, bounds: 1888 × 1048, states: [Fullscreen]"
+    );
+
+    for surface in &surfaces {
+        let window = f.client(id).window(surface);
+        window.attach_new_buffer();
+        window.ack_last_and_commit();
+        f.double_roundtrip(id);
+
+        // Already configured for headless-2, so it isn't resized when it maps.
+        let window = f.client(id).window(surface);
+        for configure in window.recent_configures() {
+            assert_eq!(configure.size, (1920, 1080));
+        }
+    }
+
+    let niri = f.niri();
+    let (mon, _, ws) = niri
+        .layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.windows().next().is_some())
+        .unwrap();
+    assert_eq!(mon.unwrap().output_name(), "headless-2");
+    assert_eq!(ws.name().map(String::as_str), Some("ws-2"));
+    assert_eq!(ws.windows().count(), 2);
+}
+
+/// Maps a parent on headless-1 in ws-1, gives a dialog its initial configure while it follows its
+/// parent, then moves the parent to headless-2. Then `request` sends a request for the dialog, and
+/// the dialog maps. Checks that the dialog maps next to its parent on headless-2, and returns its
+/// configures after the request.
+fn check_request_before_map_for_dialog_that_follows_parent(
+    request: impl FnOnce(&super::client::Window),
+) -> String {
+    let config = Config::parse_mem(
+        r##"
+workspace "ws-1"
+"##,
+    )
+    .unwrap();
+
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1280, 720));
+    f.add_output(2, (1920, 1080));
+
+    // The parent opens on headless-1, in ws-1.
+    let id = f.add_client();
+    let parent = f.client(id).create_window();
+    let parent_surface = parent.surface.clone();
+    let parent_toplevel = parent.xdg_toplevel.clone();
+    parent.commit();
+    f.roundtrip(id);
+    let parent = f.client(id).window(&parent_surface);
+    parent.attach_new_buffer();
+    parent.ack_last_and_commit();
+    f.roundtrip(id);
+
+    // The dialog gets its initial configure while following its parent, which is in ws-1.
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.set_parent(Some(&parent_toplevel));
+    window.commit();
+    f.roundtrip(id);
+    let _ = f.client(id).window(&surface).format_recent_configures();
+
+    // Then the parent moves to headless-2.
+    let parent_window = f.niri().layout.windows().next().unwrap().1.window.clone();
+    let output = f.niri_output(2);
+    f.niri().layout.move_to_output(
+        Some(&parent_window),
+        &output,
+        None,
+        crate::layout::ActivateWindow::No,
+    );
+
+    request(f.client(id).window(&surface));
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    let configures = window.format_recent_configures();
+
+    window.attach_new_buffer();
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    let niri = f.niri();
+    let monitors: Vec<_> = niri
+        .layout
+        .windows()
+        .map(|(mon, _)| mon.unwrap().output_name().clone())
+        .collect();
+    assert_eq!(monitors, ["headless-2", "headless-2"]);
+
+    configures
+}
+
+#[test]
+fn maximize_before_map_keeps_a_dialog_next_to_its_parent() {
+    // The dialog is sized for headless-2, where it will open next to its parent.
+    let configures = check_request_before_map_for_dialog_that_follows_parent(|window| {
+        window.set_maximized();
+    });
+    assert_eq!(
+        configures,
+        "size: 1920 × 1080, bounds: 1888 × 1048, states: [Maximized]"
+    );
+}
+
+#[test]
+fn unmaximize_before_map_keeps_a_dialog_next_to_its_parent() {
+    // The dialog is sized for headless-2, where it will open next to its parent, rather than for
+    // the output of the named workspace ws-1 that it was configured for.
+    let configures = check_request_before_map_for_dialog_that_follows_parent(|window| {
+        window.unset_maximized();
+    });
+    assert_eq!(configures, "size: 0 × 0, bounds: 1920 × 1080, states: []");
+}
+
+/// Maps a parent in ws-3 and gives a dialog its initial configure for ws-2, both on headless-1.
+/// Then both workspaces move to headless-2, `request` sends a request for the dialog, and the
+/// dialog maps. Checks that the dialog maps in ws-2 rather than next to its parent, as it would
+/// without the request, and returns its configures after the request.
+fn check_request_before_map_for_dialog_on_its_workspace(
+    request: impl FnOnce(&super::client::Window),
+) -> String {
+    let config = Config::parse_mem(
+        r##"
+workspace "ws-2" {
+    open-on-output "headless-2"
+}
+
+workspace "ws-3" {
+    open-on-output "headless-2"
+}
+
+window-rule {
+    match title="parent"
+    open-on-workspace "ws-3"
+}
+
+window-rule {
+    match title="dialog"
+    open-on-workspace "ws-2"
+}
+"##,
+    )
+    .unwrap();
+
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1280, 720));
+
+    // headless-2 isn't connected yet, so the parent opens in ws-3 on headless-1.
+    let id = f.add_client();
+    let parent = f.client(id).create_window();
+    let parent_surface = parent.surface.clone();
+    let parent_toplevel = parent.xdg_toplevel.clone();
+    parent.set_title("parent");
+    parent.commit();
+    f.roundtrip(id);
+    let parent = f.client(id).window(&parent_surface);
+    parent.attach_new_buffer();
+    parent.ack_last_and_commit();
+    f.roundtrip(id);
+
+    // The dialog gets its initial configure for ws-2, which is on headless-1 too.
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.set_title("dialog");
+    window.set_parent(Some(&parent_toplevel));
+    window.commit();
+    f.roundtrip(id);
+    let _ = f.client(id).window(&surface).format_recent_configures();
+
+    // Now both workspaces move to headless-2, ws-3 with the parent.
+    f.add_output(2, (1920, 1080));
+    f.roundtrip(id);
+
+    request(f.client(id).window(&surface));
+    f.roundtrip(id);
+    let window = f.client(id).window(&surface);
+    let configures = window.format_recent_configures();
+
+    window.attach_new_buffer();
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    // The dialog opens in ws-2, not next to its parent in ws-3.
+    let niri = f.niri();
+    let windows: Vec<_> = niri
+        .layout
+        .workspaces()
+        .map(|(mon, _, ws)| {
+            (
+                mon.map(|mon| mon.output_name().clone()),
+                ws.name().cloned(),
+                ws.windows().count(),
+            )
+        })
+        .filter(|(_, _, count)| *count > 0)
+        .collect();
+    assert_eq!(
+        windows,
+        [
+            (
+                Some(String::from("headless-2")),
+                Some(String::from("ws-2")),
+                1
+            ),
+            (
+                Some(String::from("headless-2")),
+                Some(String::from("ws-3")),
+                1
+            ),
+        ]
+    );
+
+    configures
+}
+
+#[test]
+fn maximize_before_map_keeps_a_dialog_on_its_workspace() {
+    let configures = check_request_before_map_for_dialog_on_its_workspace(|window| {
+        window.set_maximized();
+    });
+    assert_eq!(
+        configures,
+        "size: 1920 × 1080, bounds: 1888 × 1048, states: [Maximized]"
+    );
+}
+
+#[test]
+fn unmaximize_before_map_keeps_a_dialog_on_its_workspace() {
+    let configures = check_request_before_map_for_dialog_on_its_workspace(|window| {
+        window.unset_maximized();
+    });
+    assert_eq!(configures, "size: 0 × 0, bounds: 1920 × 1080, states: []");
+}
