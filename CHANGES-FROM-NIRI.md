@@ -75,6 +75,9 @@ A crash of the compositor ends the whole session.
     nori doesn't cull in that window-move code and falls back to an estimate when the computed duration is invalid ([49b38eec](https://github.com/Deliveos/nori/commit/49b38eec3f0ec501a1b7ba23e48aad2e3db32df0); fixes [#11](https://github.com/Deliveos/nori/issues/11)).
 - **Left click in the window switcher with the pointer on no output** (after an unplug, an output turned off, or a scale change) panics in niri.
     nori treats it as a click outside the switcher and closes it ([b27a9740](https://github.com/Deliveos/nori/commit/b27a9740a63aaf9b8e1078be4cafe9a6ab76e89f); fixes [#10](https://github.com/Deliveos/nori/issues/10)).
+- **Toggling floating during a drag after the dragged window closed.**
+    In niri, if the window being moved closes, and the user presses the other mouse button or puts down a second finger (which toggles floating during a move) before the next pointer or touch motion, the toggle looks for a window that is gone and panics.
+    nori ignores the toggle in that case, and has a test for it in `src/layout/tests.rs`; the randomized layout tests now also toggle floating for windows that are gone ([#199](https://github.com/Deliveos/nori/pull/199); fixes [#146](https://github.com/Deliveos/nori/issues/146)).
 - <a id="clipboard-writer-threads"></a>**Clipboard writer threads.**
     When niri itself owns the clipboard (a screenshot copied to the clipboard), it starts one thread per paste request, and each thread blocks until the client reads.
     A client that never reads piles up threads (200 requests left 200 threads in the issue's test), and when starting a thread fails, niri panics.

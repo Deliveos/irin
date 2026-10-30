@@ -1351,11 +1351,10 @@ impl Op {
             }
             Op::ExpandColumnToAvailableWidth => layout.expand_column_to_available_width(),
             Op::ToggleWindowFloating { id } => {
-                let id = id.filter(|id| layout.has_window(id));
+                // An id that is gone must be ignored, not panic.
                 layout.toggle_window_floating(id.as_ref());
             }
             Op::SetWindowFloating { id, floating } => {
-                let id = id.filter(|id| layout.has_window(id));
                 layout.set_window_floating(id.as_ref(), floating);
             }
             Op::FocusFloating => {
@@ -4257,6 +4256,37 @@ fn move_workspace_to_top_keeps_focus_with_empty_workspace_above_first() {
     monitors[0].move_workspace_to_idx(old_idx, 0);
     layout.verify_invariants();
     assert!(layout.active_workspace().unwrap().has_window(&1));
+}
+
+#[test]
+fn toggle_floating_after_moved_window_closed() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 100.,
+            py: 100.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: 400.,
+            py: 100.,
+        },
+        Op::CloseWindow(1),
+    ];
+    let mut layout = check_ops(ops);
+
+    // The move grab still has the window's id, and toggles floating on a button press.
+    layout.toggle_window_floating(Some(&1));
+    layout.set_window_floating(Some(&1), true);
+    layout.verify_invariants();
 }
 
 proptest! {
