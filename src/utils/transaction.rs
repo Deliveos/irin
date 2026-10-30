@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use atomic::Ordering;
 use calloop::ping::{make_ping, Ping};
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::LoopHandle;
+use calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::wayland_server::Client;
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
@@ -42,7 +42,14 @@ pub struct TransactionBlocker(Weak<Inner>);
 #[derive(Debug)]
 enum Deadline {
     NotRegistered(Instant),
-    Registered { remove: Ping },
+    /// The deadline timer is registered.
+    ///
+    /// Pinging `remove` removes the timer. Without it (when creating or inserting the ping
+    /// failed), the timer stays until the deadline; if the transaction is gone by then, it does
+    /// nothing.
+    Registered {
+        remove: Option<Ping>,
+    },
 }
 
 #[derive(Debug)]
@@ -100,25 +107,26 @@ impl Transaction {
                         inner.complete();
                     } else {
                         // We should remove the timer automatically. But this callback can still
-                        // just happen to run while the ping callback is scheduled, leading to this
-                        // branch being legitimately taken.
+                        // just happen to run while the ping callback is scheduled, or there may
+                        // be no ping, leading to this branch being legitimately taken.
                         trace!("transaction completed without removing the timer");
                     }
 
                     TimeoutAction::Drop
                 })
-                .unwrap();
+                .inspect_err(|err| {
+                    error!("error inserting the transaction deadline timer: {err:?}")
+                });
+            let Ok(token) = token else {
+                // Without the timer, a client that never commits would hold up the transaction
+                // forever, so complete it right away.
+                self.inner.complete();
+                return;
+            };
 
-            // Add a ping source that will be used to remove the timer automatically.
-            let (ping, source) = make_ping().unwrap();
-            let loop_handle = event_loop.clone();
-            event_loop
-                .insert_source(source, move |_, _, _| {
-                    loop_handle.remove(token);
-                })
-                .unwrap();
-
-            *cell = Deadline::Registered { remove: ping };
+            *cell = Deadline::Registered {
+                remove: insert_removal_ping(event_loop, token),
+            };
         }
     }
 
@@ -133,6 +141,33 @@ impl Transaction {
     }
 }
 
+/// Adds a ping source that removes the deadline timer with `token`.
+///
+/// Returns `None` if that fails, for example when out of file descriptors.
+fn insert_removal_ping<T: 'static>(
+    event_loop: &LoopHandle<'static, T>,
+    token: RegistrationToken,
+) -> Option<Ping> {
+    let (ping, source) = match make_ping() {
+        Ok(x) => x,
+        Err(err) => {
+            warn!("error creating a ping to remove the transaction deadline timer: {err:?}");
+            return None;
+        }
+    };
+
+    let loop_handle = event_loop.clone();
+    let res = event_loop.insert_source(source, move |_, _, _| {
+        loop_handle.remove(token);
+    });
+    if let Err(err) = res {
+        warn!("error inserting the ping to remove the transaction deadline timer: {err:?}");
+        return None;
+    }
+
+    Some(ping)
+}
+
 impl Drop for Transaction {
     fn drop(&mut self) {
         let _span = trace_span!("drop", transaction = ?Arc::as_ptr(&self.inner)).entered();
@@ -143,7 +178,10 @@ impl Drop for Transaction {
             self.inner.complete();
 
             // Also remove the timer.
-            if let Deadline::Registered { remove } = &*self.deadline.borrow() {
+            if let Deadline::Registered {
+                remove: Some(remove),
+            } = &*self.deadline.borrow()
+            {
                 remove.ping();
             };
         }
@@ -189,5 +227,68 @@ impl Inner {
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::os::fd::AsRawFd as _;
+    use std::process::Command;
+
+    use calloop::EventLoop;
+
+    use super::*;
+
+    /// Lowers the soft open file limit so that creating a file descriptor fails with `EMFILE`.
+    fn use_up_file_descriptors() {
+        // The lowest free file descriptor; every one below it is open.
+        let lowest_free = File::open("/dev/null").unwrap().as_raw_fd();
+
+        let mut rlim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) },
+            0
+        );
+        rlim.rlim_cur = lowest_free as libc::rlim_t;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) }, 0);
+    }
+
+    #[test]
+    fn deadline_timer_without_file_descriptors() {
+        // The open file limit is per process, so run this test alone in a child process.
+        const IN_CHILD: &str = "NORI_TEST_TRANSACTION_IN_CHILD";
+        if std::env::var_os(IN_CHILD).is_none() {
+            let name = "utils::transaction::tests::deadline_timer_without_file_descriptors";
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(IN_CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            // Make sure that the child ran this test rather than nothing.
+            assert!(stdout.contains("1 passed"), "{stdout}\n{stderr}");
+            return;
+        }
+
+        let event_loop = EventLoop::<()>::try_new().unwrap();
+        let transaction = Transaction::new();
+
+        use_up_file_descriptors();
+        assert!(make_ping().is_err());
+        assert!(
+            crate::utils::insert_channel(&event_loop.handle(), |_: (), _: &mut ()| ()).is_err()
+        );
+
+        transaction.register_deadline_timer(&event_loop.handle());
+        assert!(matches!(
+            *transaction.deadline.borrow(),
+            Deadline::Registered { remove: None }
+        ));
     }
 }
