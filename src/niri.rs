@@ -192,7 +192,7 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, create_new_numbered, expand_home, get_monotonic_time,
+    center, center_f64, create_new_numbered, expand_home, get_monotonic_time, insert_channel,
     ipc_transform_to_smithay, is_mapped, logical_output, make_screenshot_path, output_matches_name,
     output_size, panel_orientation, run_when_readable, send_scale_transform, winit_scale,
     write_png_rgba8, xwayland, CastStreamId,
@@ -3090,21 +3090,19 @@ impl Niri {
     /// that a slow logind doesn't stall the compositor.
     #[cfg(feature = "dbus")]
     pub fn inhibit_power_key_in_thread(&mut self) {
-        let (tx, rx) = calloop::channel::sync_channel(1);
-        let res = self.event_loop.insert_source(rx, |event, _, state| {
-            let calloop::channel::Event::Msg(fd) = event else {
-                return;
-            };
-
+        let res = insert_channel(&self.event_loop, |fd, state: &mut State| {
             // The config may have changed again while the call was in flight.
             if !state.niri.config.borrow().input.disable_power_key_handling {
                 state.niri.inhibit_power_key_fd = Some(fd);
             }
         });
-        if let Err(err) = res {
-            warn!("error inserting the power key inhibitor channel: {err:?}");
-            return;
-        }
+        let tx = match res {
+            Ok(tx) => tx,
+            Err(err) => {
+                warn!("error creating the power key inhibitor channel: {err:?}");
+                return;
+            }
+        };
 
         let res = thread::Builder::new()
             .name("Logind Power Key Inhibitor".to_owned())
@@ -3112,9 +3110,7 @@ impl Niri {
                 let _span = tracy_client::span!("take_power_key_inhibitor");
 
                 match take_power_key_inhibitor() {
-                    Ok(fd) => {
-                        let _ = tx.send(fd);
-                    }
+                    Ok(fd) => tx.send(fd),
                     Err(err) => warn!("error inhibiting power key: {err:?}"),
                 }
             });
@@ -6830,31 +6826,19 @@ impl Niri {
 
         // Prepare to set the encoded image as our clipboard selection. This must be done from the
         // main thread.
-        let (tx, rx) = calloop::channel::sync_channel::<Arc<[u8]>>(1);
-        self.event_loop
-            .insert_source(rx, move |event, _, state| match event {
-                calloop::channel::Event::Msg(buf) => {
-                    set_data_device_selection(
-                        &state.niri.display_handle,
-                        &state.niri.seat,
-                        vec![String::from("image/png")],
-                        buf.clone(),
-                    );
-                }
-                calloop::channel::Event::Closed => (),
-            })
-            .unwrap();
+        let tx = insert_channel(&self.event_loop, |buf: Arc<[u8]>, state: &mut State| {
+            set_data_device_selection(
+                &state.niri.display_handle,
+                &state.niri.seat,
+                vec![String::from("image/png")],
+                buf,
+            );
+        })?;
 
         // Prepare to send screenshot completion event back to main thread.
-        let (event_tx, event_rx) = calloop::channel::sync_channel::<Option<String>>(1);
-        self.event_loop
-            .insert_source(event_rx, move |event, _, state| match event {
-                calloop::channel::Event::Msg(path) => {
-                    state.ipc_screenshot_taken(path);
-                }
-                calloop::channel::Event::Closed => (),
-            })
-            .unwrap();
+        let event_tx = insert_channel(&self.event_loop, |path, state: &mut State| {
+            state.ipc_screenshot_taken(path);
+        })?;
 
         // Encode and save the image in a thread as it's slow.
         self.spawn_screenshot_thread(move || {
@@ -6868,7 +6852,7 @@ impl Niri {
             drop(pixels);
 
             let buf: Arc<[u8]> = Arc::from(buf.into_boxed_slice());
-            let _ = tx.send(buf.clone());
+            tx.send(buf.clone());
 
             let mut image_path = None;
 
@@ -6916,7 +6900,7 @@ impl Niri {
                 .as_ref()
                 .and_then(|p| p.to_str())
                 .map(|s| s.to_owned());
-            let _ = event_tx.send(path_string);
+            event_tx.send(path_string);
         })
     }
 

@@ -9,6 +9,7 @@ use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::time::Duration;
 use std::{f64, fmt};
 
@@ -23,6 +24,7 @@ use smithay::backend::renderer::utils::{
 use smithay::input::pointer::CursorIcon;
 use smithay::output::{self, Output};
 use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::ping::{make_ping, Ping};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::rustix::time::{clock_gettime, ClockId};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
@@ -396,6 +398,45 @@ pub fn run_when_readable<T: 'static>(
     }
 }
 
+/// Sends messages from another thread to a callback in the event loop.
+///
+/// Made by [`insert_channel`].
+pub struct ChannelSender<T> {
+    tx: mpsc::Sender<T>,
+    ping: Ping,
+}
+
+impl<T> ChannelSender<T> {
+    /// Sends `msg` to the callback, unless its event source is gone.
+    pub fn send(&self, msg: T) {
+        if self.tx.send(msg).is_ok() {
+            self.ping.ping();
+        }
+    }
+}
+
+/// Inserts an event source that calls `callback` with each message sent with the returned sender.
+///
+/// Like a calloop channel, but returns an error where that panics: when it can't create its ping,
+/// for example when out of file descriptors. The source is removed once the sender is dropped,
+/// after the messages sent before that are handled.
+pub fn insert_channel<T: 'static, D: 'static>(
+    event_loop: &LoopHandle<'static, D>,
+    mut callback: impl FnMut(T, &mut D) + 'static,
+) -> anyhow::Result<ChannelSender<T>> {
+    let (ping, source) = make_ping().context("error creating a ping")?;
+    let (tx, rx) = mpsc::channel();
+    event_loop
+        .insert_source(source, move |(), _, data| {
+            for msg in rx.try_iter() {
+                callback(msg, data);
+            }
+        })
+        .map_err(|err| err.error)
+        .context("error inserting a ping")?;
+    Ok(ChannelSender { tx, ping })
+}
+
 pub fn write_png_rgba8(
     w: impl Write,
     width: u32,
@@ -698,7 +739,29 @@ pub fn cause_panic() {
 
 #[cfg(test)]
 mod tests {
+    use smithay::reexports::calloop::EventLoop;
+
     use super::*;
+
+    #[test]
+    fn channel_handles_messages_sent_before_the_sender_is_dropped() {
+        let mut event_loop = EventLoop::<Vec<u32>>::try_new().unwrap();
+        let tx = insert_channel(&event_loop.handle(), |msg, data: &mut Vec<u32>| {
+            data.push(msg);
+        })
+        .unwrap();
+
+        std::thread::spawn(move || {
+            tx.send(1);
+            tx.send(2);
+        })
+        .join()
+        .unwrap();
+
+        let mut data = Vec::new();
+        event_loop.dispatch(Duration::ZERO, &mut data).unwrap();
+        assert_eq!(data, [1, 2]);
+    }
 
     #[test]
     fn config_transform_for_takes_out_the_panel_orientation() {

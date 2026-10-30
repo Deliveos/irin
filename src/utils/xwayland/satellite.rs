@@ -6,9 +6,10 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 
-use calloop::channel::Sender;
-use calloop::generic::Generic;
-use calloop::{Interest, Mode, PostAction, RegistrationToken};
+use calloop::generic::{Generic, NoIoDrop};
+use calloop::ping::{make_ping, Ping};
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{Interest, LoopHandle, Mode, PostAction, Readiness, RegistrationToken};
 use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
 
 use crate::niri::State;
@@ -22,15 +23,18 @@ use crate::utils::xwayland::X11Connection;
 /// milliseconds. A configured path to a program that doesn't exit would otherwise freeze niri.
 const TEST_ONDEMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long to wait before watching the X11 sockets again after an error.
+///
+/// Such errors usually mean that niri is out of file descriptors. Then it can't accept a pending
+/// connection either, and the connection would trigger the watch again right away.
+const RETRY_WATCH_DELAY: Duration = Duration::from_secs(1);
+
 pub struct Satellite {
     x11: X11Connection,
     abstract_token: Option<RegistrationToken>,
     unix_token: Option<RegistrationToken>,
-    to_main: Sender<ToMain>,
-}
-
-enum ToMain {
-    SetupWatch,
+    /// Sets up the watch again, after xwayland-satellite exits.
+    setup_watch_ping: Ping,
 }
 
 impl Satellite {
@@ -55,6 +59,16 @@ pub fn setup(state: &mut State) {
     }
     drop(config);
 
+    // A ping rather than a calloop channel, which panics when it can't create its ping, for
+    // example when out of file descriptors.
+    let (setup_watch_ping, source) = match make_ping() {
+        Ok(x) => x,
+        Err(err) => {
+            warn!("error creating a ping, disabling xwayland-satellite integration: {err:?}");
+            return;
+        }
+    };
+
     let x11 = match super::setup_connection() {
         Ok(x11) => x11,
         Err(err) => {
@@ -64,24 +78,20 @@ pub fn setup(state: &mut State) {
     };
 
     let event_loop = &state.niri.event_loop;
-    let (to_main, rx) = calloop::channel::channel();
-    event_loop
-        .insert_source(rx, move |event, _, state| match event {
-            calloop::channel::Event::Msg(msg) => match msg {
-                ToMain::SetupWatch => setup_watch(state),
-            },
-            calloop::channel::Event::Closed => (),
-        })
-        .unwrap();
+    let res = event_loop.insert_source(source, |(), _, state| setup_watch(state, true));
+    if let Err(err) = res {
+        warn!("error inserting a ping, disabling xwayland-satellite integration: {err:?}");
+        return;
+    }
 
     state.niri.satellite = Some(Satellite {
         x11,
         abstract_token: None,
         unix_token: None,
-        to_main,
+        setup_watch_ping,
     });
 
-    setup_watch(state);
+    setup_watch(state, true);
 }
 
 fn test_ondemand(path: &str) -> bool {
@@ -180,7 +190,11 @@ fn clear_out_pending_connections(fd: OwnedFd) -> OwnedFd {
     OwnedFd::from(listener)
 }
 
-fn setup_watch(state: &mut State) {
+/// Watches the X11 sockets, spawning xwayland-satellite when a client connects.
+///
+/// With `clear_pending`, first drops the connections that are already pending (see
+/// [`clear_out_pending_connections`]).
+fn setup_watch(state: &mut State, clear_pending: bool) {
     let Some(satellite) = state.niri.satellite.as_mut() else {
         return;
     };
@@ -197,11 +211,8 @@ fn setup_watch(state: &mut State) {
     }
 
     if let Some(fd) = &satellite.x11.abstract_fd {
-        let fd = fd.try_clone().unwrap();
-        let fd = clear_out_pending_connections(fd);
-        let source = Generic::new(fd, Interest::READ, Mode::Level);
-        let token = event_loop
-            .insert_source(source, move |_, _, state| {
+        satellite.abstract_token =
+            watch_socket(event_loop, fd, clear_pending, move |_, _, state| {
                 if let Some(satellite) = &mut state.niri.satellite {
                     // Remove the other source.
                     if let Some(token) = satellite.unix_token.take() {
@@ -212,47 +223,117 @@ fn setup_watch(state: &mut State) {
 
                     debug!("connection to X11 abstract socket; spawning xwayland-satellite");
                     let path = state.niri.config.borrow().xwayland_satellite.path.clone();
-                    spawn(path, satellite);
+                    if spawn(path, satellite).is_none() {
+                        setup_watch_later(&state.niri.event_loop);
+                    }
                 }
                 Ok(PostAction::Remove)
-            })
-            .unwrap();
-        satellite.abstract_token = Some(token);
+            });
     }
 
-    let fd = satellite.x11.unix_fd.try_clone().unwrap();
-    let fd = clear_out_pending_connections(fd);
-    let source = Generic::new(fd, Interest::READ, Mode::Level);
-    let token = event_loop
-        .insert_source(source, move |_, _, state| {
-            if let Some(satellite) = &mut state.niri.satellite {
-                // Remove the other source.
-                if let Some(token) = satellite.abstract_token.take() {
-                    state.niri.event_loop.remove(token);
-                }
-                // Clear this source.
-                satellite.unix_token = None;
-
-                debug!("connection to X11 unix socket; spawning xwayland-satellite");
-                let path = state.niri.config.borrow().xwayland_satellite.path.clone();
-                spawn(path, satellite);
+    let unix_fd = &satellite.x11.unix_fd;
+    satellite.unix_token = watch_socket(event_loop, unix_fd, clear_pending, move |_, _, state| {
+        if let Some(satellite) = &mut state.niri.satellite {
+            // Remove the other source.
+            if let Some(token) = satellite.abstract_token.take() {
+                state.niri.event_loop.remove(token);
             }
-            Ok(PostAction::Remove)
-        })
-        .unwrap();
-    satellite.unix_token = Some(token);
+            // Clear this source.
+            satellite.unix_token = None;
+
+            debug!("connection to X11 unix socket; spawning xwayland-satellite");
+            let path = state.niri.config.borrow().xwayland_satellite.path.clone();
+            if spawn(path, satellite).is_none() {
+                setup_watch_later(&state.niri.event_loop);
+            }
+        }
+        Ok(PostAction::Remove)
+    });
+
+    // Watch both sockets or neither, so that a client of the socket that isn't watched doesn't
+    // wait until another client connects to the other one.
+    let abstract_failed = satellite.x11.abstract_fd.is_some() && satellite.abstract_token.is_none();
+    if abstract_failed || satellite.unix_token.is_none() {
+        if let Some(token) = satellite.abstract_token.take() {
+            event_loop.remove(token);
+        }
+        if let Some(token) = satellite.unix_token.take() {
+            event_loop.remove(token);
+        }
+        setup_watch_later(event_loop);
+    }
 }
 
-fn spawn(path: String, xwl: &Satellite) {
+/// Watches a copy of an X11 socket, calling `callback` when a client connects.
+///
+/// Returns `None` and logs a warning on errors.
+fn watch_socket<F>(
+    event_loop: &LoopHandle<'static, State>,
+    fd: &OwnedFd,
+    clear_pending: bool,
+    callback: F,
+) -> Option<RegistrationToken>
+where
+    F: FnMut(Readiness, &mut NoIoDrop<OwnedFd>, &mut State) -> io::Result<PostAction> + 'static,
+{
+    let fd = match fd.try_clone() {
+        Ok(fd) => fd,
+        Err(err) => {
+            warn!("error duplicating an X11 socket: {err:?}");
+            return None;
+        }
+    };
+    let fd = if clear_pending {
+        clear_out_pending_connections(fd)
+    } else {
+        fd
+    };
+    let source = Generic::new(fd, Interest::READ, Mode::Level);
+    match event_loop.insert_source(source, callback) {
+        Ok(token) => Some(token),
+        Err(err) => {
+            warn!("error watching an X11 socket: {:?}", err.error);
+            None
+        }
+    }
+}
+
+/// Sets up the X11 socket watch after [`RETRY_WATCH_DELAY`].
+///
+/// Keeps the pending connections. After a failed spawn, xwayland-satellite hasn't tried to accept
+/// them, so the watch spawns it for them. When setting up the watch failed after
+/// xwayland-satellite exited, a socket that couldn't be copied wasn't cleared, so the connections
+/// that xwayland-satellite left there spawn it again.
+fn setup_watch_later(event_loop: &LoopHandle<'static, State>) {
+    debug!("watching the X11 sockets again in {RETRY_WATCH_DELAY:?}");
+    let timer = Timer::from_duration(RETRY_WATCH_DELAY);
+    let res = event_loop.insert_source(timer, |_, _, state| {
+        setup_watch(state, false);
+        TimeoutAction::Drop
+    });
+    if let Err(err) = res {
+        error!("error inserting the timer to watch the X11 sockets again: {err:?}");
+    }
+}
+
+/// Spawns xwayland-satellite on a thread, which sets up the watch again when it exits.
+///
+/// Returns `None` if it couldn't copy the X11 sockets, then the caller sets up the watch again.
+fn spawn(path: String, xwl: &Satellite) -> Option<()> {
     let _span = tracy_client::span!("satellite::spawn");
 
-    let abstract_fd = xwl
-        .x11
-        .abstract_fd
-        .as_ref()
-        .map(|fd| fd.try_clone().unwrap());
-    let unix_fd = xwl.x11.unix_fd.try_clone().unwrap();
-    let to_main = xwl.to_main.clone();
+    let clone_fds = || -> io::Result<_> {
+        let abstract_fd = xwl.x11.abstract_fd.as_ref().map(OwnedFd::try_clone);
+        Ok((abstract_fd.transpose()?, xwl.x11.unix_fd.try_clone()?))
+    };
+    let (abstract_fd, unix_fd) = match clone_fds() {
+        Ok(fds) => fds,
+        Err(err) => {
+            warn!("error duplicating the X11 sockets for xwayland-satellite: {err:?}");
+            return None;
+        }
+    };
+    let setup_watch_ping = xwl.setup_watch_ping.clone();
 
     // Expand `~` at the start.
     let mut path = PathBuf::from(path);
@@ -287,13 +368,15 @@ fn spawn(path: String, xwl: &Satellite) {
 
             // Once xwayland-satellite crashes or fails to spawn, re-establish our X11 socket watch
             // to try again next time.
-            let _ = to_main.send(ToMain::SetupWatch);
+            setup_watch_ping.ping();
         });
 
     if let Err(err) = res {
         warn!("error spawning a thread to spawn xwayland-satellite: {err:?}");
-        let _ = xwl.to_main.send(ToMain::SetupWatch);
+        xwl.setup_watch_ping.ping();
     }
+
+    Some(())
 }
 
 fn spawn_and_wait(
