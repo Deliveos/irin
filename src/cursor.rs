@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::Read;
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, ensure, Context};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::desktop::utils::bbox_from_surface_tree;
@@ -193,6 +193,7 @@ impl CursorManager {
         file.read_to_end(&mut buf)
             .context("error reading cursor icon file")?;
 
+        check_image_sizes(&buf)?;
         let images = parse_xcursor(&buf).context("error parsing cursor icon file")?;
         XCursor::from_images(images, size)
     }
@@ -276,6 +277,49 @@ impl CursorTextureCache {
             })[idx]
             .clone()
     }
+}
+
+/// Checks that the pixels of every image in an Xcursor file fit in the file.
+///
+/// `parse_xcursor()` allocates the pixels of an image as declared in its header, up to about 4 GiB,
+/// before it finds out that the file is shorter, so check this first.
+fn check_image_sizes(file: &[u8]) -> anyhow::Result<()> {
+    const IMAGE_TYPE: u32 = 0xfffd_0002;
+    // Header size, type, nominal size, version, width, height, hotspot x and y, delay.
+    const IMAGE_HEADER_LEN: u128 = 36;
+
+    let u32_at = |pos: u64| -> Option<u32> {
+        let pos = usize::try_from(pos).ok()?;
+        let bytes = file.get(pos..pos.checked_add(4)?)?;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    };
+
+    // Leave malformed headers and tables of contents to parse_xcursor().
+    let (Some(header_len), Some(ntoc)) = (u32_at(4), u32_at(12)) else {
+        return Ok(());
+    };
+    for i in 0..u64::from(ntoc) {
+        let entry = u64::from(header_len) + i * 12;
+        let (Some(toc_type), Some(pos)) = (u32_at(entry), u32_at(entry + 8)) else {
+            return Ok(());
+        };
+        if toc_type != IMAGE_TYPE {
+            continue;
+        }
+
+        let pos = u64::from(pos);
+        let (Some(width), Some(height)) = (u32_at(pos + 16), u32_at(pos + 20)) else {
+            return Ok(());
+        };
+        // In u128, so that this can't overflow for any width and height.
+        let len = 4 * u128::from(width) * u128::from(height);
+        ensure!(
+            u128::from(pos) + IMAGE_HEADER_LEN + len <= file.len() as u128,
+            "cursor image of {width} × {height} doesn't fit in the file"
+        );
+    }
+
+    Ok(())
 }
 
 // The XCursorBuffer implementation is inspired by `wayland-rs`, thus provided under MIT license.
@@ -384,6 +428,43 @@ mod tests {
         let images = parse_xcursor(&file).unwrap();
         assert!(images.is_empty());
         assert!(XCursor::from_images(images, 24).is_err());
+    }
+
+    /// An Xcursor file with one image of the given size and the given pixel bytes.
+    fn xcursor_file(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut file = Vec::new();
+        for value in [16, 0x1_0000, 1] {
+            // Header size, version, number of entries.
+            file.extend_from_slice(&u32::to_le_bytes(value));
+        }
+        file.splice(0..0, *b"Xcur");
+        // Table of contents: an image of nominal size 24 at position 28.
+        for value in [0xfffd_0002, 24, 28] {
+            file.extend_from_slice(&u32::to_le_bytes(value));
+        }
+        // Image header: header size, type, nominal size, version, width, height, hotspot, delay.
+        for value in [36, 0xfffd_0002, 24, 1, width, height, 0, 0, 0] {
+            file.extend_from_slice(&u32::to_le_bytes(value));
+        }
+        file.extend_from_slice(pixels);
+        file
+    }
+
+    #[test]
+    fn image_larger_than_the_file_is_rejected_before_parsing() {
+        let file = xcursor_file(1, 1, &[1, 2, 3, 4]);
+        check_image_sizes(&file).unwrap();
+        assert_eq!(parse_xcursor(&file).unwrap().len(), 1);
+
+        // Without the check, parse_xcursor() would allocate 4 × 32767 × 32767 bytes here.
+        let file = xcursor_file(32767, 32767, &[1, 2, 3, 4]);
+        assert!(check_image_sizes(&file).is_err());
+
+        let file = xcursor_file(2, 1, &[1, 2, 3, 4]);
+        assert!(check_image_sizes(&file).is_err());
+
+        let file = xcursor_file(u32::MAX, u32::MAX, &[1, 2, 3, 4]);
+        assert!(check_image_sizes(&file).is_err());
     }
 
     #[test]
