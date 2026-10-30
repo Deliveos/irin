@@ -256,6 +256,10 @@ The spawn fix is about a background thread that never finished.
 - **Focus after `move-workspace-to-index` with `empty-workspace-above-first`.**
     In niri, moving a workspace to the top with this option compares the focused workspace's index after inserting the new empty workspace with an index from before, so focus can jump to a neighbouring workspace, or to the moved one, without animation.
     nori keeps the same workspace focused ([#200](https://github.com/Deliveos/nori/pull/200); fixes [#172](https://github.com/Deliveos/nori/issues/172)).
+- **Closing a column after a view gesture.**
+    When a new column opens right of the focused one, niri remembers to focus the previous column again if the new one is closed right away, and forgets this when focus moves to another column, except when a view gesture moves it (a touchpad swipe, a mouse or touchscreen view drag, or edge scrolling during drag-and-drop).
+    After such a gesture, closing the newly focused column focuses the column left of it and scrolls to the view position remembered from before, instead of focusing the column that moves into its place (or the one left of it, if it was the last), as closing a column normally does.
+    nori forgets it after a gesture too, and has a test for it in `src/layout/tests.rs` ([#218](https://github.com/Deliveos/nori/pull/218); fixes [#174](https://github.com/Deliveos/nori/issues/174)).
 
 ### Screencasts
 

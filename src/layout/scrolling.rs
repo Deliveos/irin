@@ -3543,6 +3543,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let delta = active_col_x - new_col_x;
 
         if self.active_column_idx != new_col_idx {
+            // A different column was activated, like in activate_column_with_anim_config().
+            self.activate_prev_column_on_removal = None;
             self.view_offset_to_restore = None;
         }
 
