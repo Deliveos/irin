@@ -2489,11 +2489,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> Option<Rectangle<f64, Logical>> {
         let mut hint_area = match position {
             InsertPosition::NewColumn(column_index) => {
+                // The working area can be shorter than two gaps.
+                let hint_height =
+                    f64::max(0., self.working_area.size.h - self.options.layout.gaps * 2.);
+
                 if column_index == 0 || column_index == self.columns.len() {
-                    let size = Size::from((
-                        300.,
-                        self.working_area.size.h - self.options.layout.gaps * 2.,
-                    ));
+                    let size = Size::from((300., hint_height));
                     let mut loc = Point::from((
                         self.column_x(column_index),
                         self.working_area.loc.y + self.options.layout.gaps,
@@ -2506,10 +2507,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     error!("insert hint column index is out of range");
                     return None;
                 } else {
-                    let size = Size::from((
-                        300.,
-                        self.working_area.size.h - self.options.layout.gaps * 2.,
-                    ));
+                    let size = Size::from((300., hint_height));
                     let loc = Point::from((
                         self.column_x(column_index) - size.w / 2. - self.options.layout.gaps / 2.,
                         self.working_area.loc.y + self.options.layout.gaps,

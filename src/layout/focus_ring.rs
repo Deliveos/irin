@@ -139,40 +139,45 @@ impl FocusRing {
                 ),
             );
 
+            // During a resize animation that overshoots, win_size can be smaller than twice the
+            // border width, even negative. And with uneven radii, fitting them in f32 and ceiling
+            // them can make one corner larger than its side. The other corners and the edges then
+            // come out negative, which Size doesn't allow.
+            let size = |w: f64, h: f64| Size::from((f64::max(w, 0.), f64::max(h, 0.)));
+
             // Top edge.
-            self.sizes[0] = Size::from((win_size.w + width * 2. - top_left - top_right, width));
+            self.sizes[0] = size(win_size.w + width * 2. - top_left - top_right, width);
             self.locations[0] = Point::from((-width + top_left, -width));
 
             // Bottom edge.
-            self.sizes[1] =
-                Size::from((win_size.w + width * 2. - bottom_left - bottom_right, width));
+            self.sizes[1] = size(win_size.w + width * 2. - bottom_left - bottom_right, width);
             self.locations[1] = Point::from((-width + bottom_left, win_size.h));
 
             // Left edge.
-            self.sizes[2] = Size::from((width, win_size.h + width * 2. - top_left - bottom_left));
+            self.sizes[2] = size(width, win_size.h + width * 2. - top_left - bottom_left);
             self.locations[2] = Point::from((-width, -width + top_left));
 
             // Right edge.
-            self.sizes[3] = Size::from((width, win_size.h + width * 2. - top_right - bottom_right));
+            self.sizes[3] = size(width, win_size.h + width * 2. - top_right - bottom_right);
             self.locations[3] = Point::from((win_size.w, -width + top_right));
 
             // Top-left corner.
-            self.sizes[4] = Size::from((top_left, top_left));
+            self.sizes[4] = size(top_left, top_left);
             self.locations[4] = Point::from((-width, -width));
 
             // Top-right corner.
-            self.sizes[5] = Size::from((top_right, top_right));
+            self.sizes[5] = size(top_right, top_right);
             self.locations[5] = Point::from((win_size.w + width - top_right, -width));
 
             // Bottom-right corner.
-            self.sizes[6] = Size::from((bottom_right, bottom_right));
+            self.sizes[6] = size(bottom_right, bottom_right);
             self.locations[6] = Point::from((
                 win_size.w + width - bottom_right,
                 win_size.h + width - bottom_right,
             ));
 
             // Bottom-left corner.
-            self.sizes[7] = Size::from((bottom_left, bottom_left));
+            self.sizes[7] = size(bottom_left, bottom_left);
             self.locations[7] = Point::from((-width, win_size.h + width - bottom_left));
 
             for (buf, size) in zip(&mut self.buffers, self.sizes) {

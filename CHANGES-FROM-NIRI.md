@@ -64,6 +64,11 @@ nori renames the names that users and other programs see ([#78](https://github.c
 
 A crash of the compositor ends the whole session.
 
+- **Negative sizes in the layout.**
+    niri builds the insert hint of a new column with the working area height minus two gaps, and the edges and corners of a window's border from the animated tile size minus twice the border width, without a lower bound.
+    The first is negative when the working area is shorter than two gaps (large `gaps`, `struts` or a layer-shell exclusive zone), the second during a resize animation that overshoots below twice the border width, for example a spring with a low damping ratio; with uneven corner radii (such as `geometry-corner-radius 29 0 0 0`), rounding the fitted radius up can also make one corner larger than its side and the next one negative.
+    For the insert hint, and for a border drawn without the window background (server-side decorations or `draw-border-with-background false`), these sizes fail a debug assertion in smithay, so builds with debug assertions (the dev profile and `cargo test`) panic; what release builds draw then was not checked.
+    nori clamps the insert hint height and the sizes of the border's edges and corners to 0, and has tests for both in `src/layout/tests.rs` ([#213](https://github.com/Deliveos/nori/pull/213); fixes [#176](https://github.com/Deliveos/nori/issues/176)).
 - <a id="output-positions-and-custom-modes"></a>**Huge output positions and zero-size custom modes.**
     In niri, a very large output position (from the config, IPC or wlr-output-management) overflows `i32` when the next output is placed, and a custom mode such as width 0 gives zero timings that smithay divides by.
     nori clamps configured positions to ±2^24 (16777216), skips custom modes whose clock, htotal or vtotal is zero (with the warning "ignoring invalid custom mode"), and treats refresh intervals that the frame clock can't use as unknown ([71f4f158](https://github.com/Deliveos/nori/commit/71f4f158ee8a8ec87d52ee7ca9f72e2ce9b8a9f3); fixes [#15](https://github.com/Deliveos/nori/issues/15)).

@@ -4345,6 +4345,102 @@ proptest! {
 }
 
 #[test]
+fn insert_hint_with_gaps_taller_than_working_area() {
+    // The working area is shorter than two gaps.
+    let config = Config::parse_mem(
+        "layout {
+    gaps 400
+}
+",
+    )
+    .unwrap();
+    let mut layout = Layout::new(Clock::with_time(Duration::ZERO), &config);
+
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::InteractiveMoveBegin {
+            window: 2,
+            output_idx: 1,
+            px: 100.,
+            py: 100.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 2,
+            dx: -1000.,
+            dy: 0.,
+            output_idx: 1,
+            px: 0.,
+            py: 100.,
+        },
+    ];
+    check_ops_on_layout(&mut layout, ops);
+    layout.update_render_elements(None);
+}
+
+#[test]
+fn overshooting_resize_animation_with_border() {
+    let config = Config::parse_mem(
+        "layout {
+    border {
+        on
+        width 10
+    }
+}
+animations {
+    window-resize {
+        spring damping-ratio=0.1 stiffness=800 epsilon=0.0001
+    }
+}
+",
+    )
+    .unwrap();
+
+    // With one rounded corner, the fitted radius can round up to more than the border's width.
+    let one_corner = niri_config::CornerRadius {
+        top_left: 29.,
+        top_right: 0.,
+        bottom_right: 0.,
+        bottom_left: 0.,
+    };
+    for geometry_corner_radius in [None, Some(one_corner)] {
+        let mut layout = Layout::new(Clock::with_time(Duration::ZERO), &config);
+
+        let ops = [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams {
+                    // Draw the border as separate edges and corners.
+                    rules: Some(ResolvedWindowRules {
+                        draw_border_with_background: Some(false),
+                        geometry_corner_radius,
+                        ..ResolvedWindowRules::default()
+                    }),
+                    ..TestWindowParams::new(1)
+                },
+            },
+            Op::Communicate(1),
+            Op::CompleteAnimations,
+            Op::SetColumnWidth(SizeChange::SetFixed(1)),
+            Op::Communicate(1),
+        ];
+        check_ops_on_layout(&mut layout, ops);
+
+        // The new tile width (21) is just above twice the border width, and the spring
+        // overshoots below it.
+        for _ in 0..40 {
+            check_ops_on_layout(&mut layout, [Op::AdvanceAnimations { msec_delta: 5 }]);
+            layout.update_render_elements(None);
+        }
+    }
+}
+
+#[test]
 fn insert_position_with_overshooting_workspace_switch() {
     let config = Config::parse_mem(
         "animations {
