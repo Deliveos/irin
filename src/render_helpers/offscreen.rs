@@ -269,16 +269,16 @@ impl Element for OffscreenRenderElement {
         scale: Scale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        let texture_size = self.texture.size().to_f64();
         let src = self.src();
 
+        // The texture can be larger than src_size, but its pixels map 1:1 to the content, so the
+        // damage needs no scaling.
         self.damage_since(commit)
             .into_iter()
             .filter_map(|region| {
                 let mut region = region.to_f64().intersection(src)?;
 
                 region.loc -= src.loc;
-                region = region.upscale(texture_size / src.size);
 
                 let logical = region.to_logical(self.scale, Transform::Normal, &src.size);
                 Some(logical.to_physical_precise_up(scale))
@@ -364,5 +364,57 @@ impl<'render> RenderElement<TtyRenderer<'render>> for OffscreenRenderElement {
         // If scanout for things other than Wayland buffers is implemented, this will need to take
         // the target GPU into account.
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::egl::native::EGLSurfacelessDisplay;
+    use smithay::backend::egl::{EGLContext, EGLDisplay};
+
+    use super::*;
+    use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+
+    #[test]
+    fn egl_damage_in_a_larger_texture_is_not_scaled() {
+        let mut renderer = unsafe {
+            let display = EGLDisplay::new(EGLSurfacelessDisplay).unwrap();
+            let context = EGLContext::new(&display).unwrap();
+            GlesRenderer::new(context).unwrap()
+        };
+        let scale = Scale::from(1.);
+        let buffer = OffscreenBuffer::default();
+
+        // Elements go from top to bottom.
+        let render = |renderer: &mut GlesRenderer, buffers: &[(&SolidColorBuffer, (f64, f64))]| {
+            let elements: Vec<_> = buffers
+                .iter()
+                .map(|(b, loc)| {
+                    SolidColorRenderElement::from_buffer(b, *loc, 1., Kind::Unspecified)
+                })
+                .collect();
+            buffer.render(renderer, scale, &elements).unwrap().0
+        };
+
+        // The content shrinks from 40 × 40 to 20 × 20, and the texture stays 40 × 40.
+        let large = SolidColorBuffer::new((40., 40.), [1., 0., 0., 1.]);
+        drop(render(&mut renderer, &[(&large, (0., 0.))]));
+
+        let base = SolidColorBuffer::new((20., 20.), [1., 0., 0., 1.]);
+        let mut small = SolidColorBuffer::new((2., 2.), [0., 1., 0., 1.]);
+        let elem = render(&mut renderer, &[(&small, (10., 10.)), (&base, (0., 0.))]);
+        assert_eq!(elem.texture().size(), Size::from((40, 40)));
+        let commit = elem.current_commit();
+        drop(elem);
+
+        // Only the small element changes.
+        small.set_color([0., 0., 1., 1.]);
+        let elem = render(&mut renderer, &[(&small, (10., 10.)), (&base, (0., 0.))]);
+        assert_eq!(elem.texture().size(), Size::from((40, 40)));
+
+        let damage: Vec<_> = Element::damage_since(&elem, scale, Some(commit))
+            .into_iter()
+            .collect();
+        assert_eq!(damage, [Rectangle::new((10, 10).into(), (2, 2).into())]);
     }
 }
