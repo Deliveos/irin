@@ -145,9 +145,14 @@ impl ScreenshotUi {
         show_pointer: bool,
         path: Option<String>,
     ) -> bool {
-        if screenshots.is_empty() {
+        // Outputs that failed to render have no screenshot, and the default one can be among them.
+        let default_output = if screenshots.contains_key(&default_output) {
+            default_output
+        } else if let Some(output) = screenshots.keys().next() {
+            output.clone()
+        } else {
             return false;
-        }
+        };
 
         let Self::Closed {
             last_selection,
