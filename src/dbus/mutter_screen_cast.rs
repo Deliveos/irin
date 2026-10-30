@@ -160,7 +160,9 @@ impl Session {
             return;
         }
 
-        Session::closed(&ctxt).await.unwrap();
+        if let Err(err) = Session::closed(&ctxt).await {
+            warn!("error sending Closed: {err:?}");
+        }
 
         if let Err(err) = self.to_niri.send(ScreenCastToNiri::StopCast {
             session_id: self.id,
@@ -170,13 +172,17 @@ impl Session {
 
         let streams = mem::take(&mut *self.streams.lock().unwrap());
         for (_, iface) in streams.iter() {
-            server
+            if let Err(err) = server
                 .remove::<Stream, _>(iface.signal_emitter().path())
                 .await
-                .unwrap();
+            {
+                warn!("error removing Stream: {err:?}");
+            }
         }
 
-        server.remove::<Session, _>(ctxt.path()).await.unwrap();
+        if let Err(err) = server.remove::<Session, _>(ctxt.path()).await {
+            warn!("error removing Session: {err:?}");
+        }
     }
 
     async fn record_monitor(

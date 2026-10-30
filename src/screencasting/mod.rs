@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::mem;
 use std::time::Duration;
+use std::{mem, thread};
 
 use anyhow::Context as _;
 use calloop::LoopHandle;
@@ -752,20 +752,30 @@ impl Niri {
         }
 
         // Not running in non-session instances.
-        let Some(conn) = self.dbus.as_ref().and_then(|d| d.conn_screen_cast.as_ref()) else {
+        let Some(conn) = self.dbus.as_ref().and_then(|d| d.conn_screen_cast.clone()) else {
             return;
         };
-        let server = conn.object_server();
-        let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id.get());
-        if let Ok(iface) = server.interface::<_, mutter_screen_cast::Session>(path) {
-            let _span = tracy_client::span!("invoking Session::stop");
 
-            async_io::block_on(async move {
-                iface
-                    .get()
-                    .stop(server.inner(), iface.signal_emitter().clone())
-                    .await
+        // Session::stop() waits for the interface lock, which a running D-Bus method of the session
+        // holds, and talks to the bus, so don't block the main thread on it.
+        let res = thread::Builder::new()
+            .name("ScreenCast Session Stop".to_owned())
+            .spawn(move || {
+                let _span = tracy_client::span!("invoking Session::stop");
+
+                let server = conn.object_server();
+                let path = format!("/org/gnome/Mutter/ScreenCast/Session/u{}", session_id.get());
+                if let Ok(iface) = server.interface::<_, mutter_screen_cast::Session>(path) {
+                    async_io::block_on(async move {
+                        iface
+                            .get()
+                            .stop(server.inner(), iface.signal_emitter().clone())
+                            .await
+                    });
+                }
             });
+        if let Err(err) = res {
+            warn!("error spawning a thread to stop the screencast session: {err:?}");
         }
     }
 
