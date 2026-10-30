@@ -371,7 +371,7 @@ impl Stream {
     }
 
     fn start(&self, ctxt: SignalEmitter<'static>) {
-        if self.was_started.load(Ordering::SeqCst) {
+        if self.was_started.swap(true, Ordering::SeqCst) {
             return;
         }
 
