@@ -310,6 +310,10 @@ The spawn fix is about a background thread that never finished.
 - **Window switcher when a hidden window closes.**
     When a window that the window switcher's current scope or app id filter hides closes, niri animates every visible thumbnail as if a thumbnail had been removed, so the whole strip jumps sideways and slides back.
     nori moves nothing in that case, with a unit test in `src/ui/mru/tests.rs` ([#243](https://github.com/Deliveos/nori/pull/243); fixes [#193](https://github.com/Deliveos/nori/issues/193)).
+- **Damage of off-screen textures.**
+    niri draws a window's opening animation, a window's fade in or out (while it is dragged with the mouse, and in tabbed columns), and the window switcher's closing fade through an off-screen texture, which it keeps when the content gets smaller.
+    It then scales the damage of that texture by the texture size over the content size, so after the content shrank a change is reported at a wrong, larger place, and the part that changed may not be repainted.
+    nori reports the damage where the content changed, and has a unit test for it in `src/render_helpers/offscreen.rs` ([#236](https://github.com/Deliveos/nori/pull/236); fixes [#191](https://github.com/Deliveos/nori/issues/191)).
 - **Focus after `move-workspace-to-index` with `empty-workspace-above-first`.**
     In niri, moving a workspace to the top with this option compares the focused workspace's index after inserting the new empty workspace with an index from before, so focus can jump to a neighbouring workspace, or to the moved one, without animation.
     nori keeps the same workspace focused ([#200](https://github.com/Deliveos/nori/pull/200); fixes [#172](https://github.com/Deliveos/nori/issues/172)).
