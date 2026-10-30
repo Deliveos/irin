@@ -1,6 +1,8 @@
 use smithay::desktop::{layer_map_for_output, LayerSurface, PopupKind, WindowSurfaceType};
+use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::server::zwlr_layer_surface_v1;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::wayland::compositor::{add_pre_commit_hook, get_parent, with_states, HookId};
 use smithay::wayland::shell::wlr_layer::{
     self, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState, LayerSurfaceData,
@@ -24,6 +26,26 @@ impl WlrLayerShellHandler for State {
         _layer: Layer,
         namespace: String,
     ) {
+        let wl_surface = surface.wl_surface().clone();
+
+        // smithay lets a client create a second layer surface for a surface that still has one.
+        if self.niri.unmapped_layer_surfaces.contains(&wl_surface)
+            || self.niri.layout.outputs().any(|o| {
+                layer_map_for_output(o)
+                    .layer_for_surface(&wl_surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some()
+            })
+        {
+            warn!("client created a second layer surface for a surface, disconnecting it");
+            let shell_surface = surface.shell_surface();
+            shell_surface.post_error(
+                zwlr_layer_surface_v1::Error::InvalidSurfaceState,
+                "the wl_surface already has a layer surface",
+            );
+            self.niri.refused_role_objects.push(shell_surface.id());
+            return;
+        }
+
         let output = if let Some(wl_output) = &wl_output {
             self.niri.output_from_resource(wl_output)
         } else {
@@ -35,9 +57,7 @@ impl WlrLayerShellHandler for State {
             return;
         };
 
-        let wl_surface = surface.wl_surface().clone();
-        let is_new = self.niri.unmapped_layer_surfaces.insert(wl_surface);
-        assert!(is_new);
+        self.niri.unmapped_layer_surfaces.insert(wl_surface);
 
         let mut map = layer_map_for_output(&output);
         map.map_layer(&LayerSurface::new(surface, namespace))
@@ -45,6 +65,14 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        // new_layer_surface() refused this layer surface, so niri doesn't track it, and the
+        // surface's first layer surface must stay (layer surfaces compare equal by wl_surface).
+        let id = surface.shell_surface().id();
+        if let Some(idx) = self.niri.refused_role_objects.iter().position(|x| *x == id) {
+            self.niri.refused_role_objects.swap_remove(idx);
+            return;
+        }
+
         let wl_surface = surface.wl_surface();
         self.niri.unmapped_layer_surfaces.remove(wl_surface);
 

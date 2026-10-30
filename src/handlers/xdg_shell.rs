@@ -13,6 +13,7 @@ use smithay::input::tablet::TabletSeatTrait;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::ConstraintAdjustment;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_surface;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{self};
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration;
 use smithay::reexports::wayland_server::protocol::wl_output;
@@ -31,7 +32,7 @@ use smithay::wayland::shell::wlr_layer::{self, Layer};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
+    XdgShellSurfaceUserData, XdgToplevelSurfaceData,
 };
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::field::Empty;
@@ -54,9 +55,33 @@ impl XdgShellHandler for State {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let wl_surface = surface.wl_surface().clone();
+
+        // smithay lets a client create a second toplevel for a surface that still has one (by
+        // calling get_toplevel twice, or through a second xdg_surface).
+        if self.niri.unmapped_windows.contains_key(&wl_surface)
+            || self
+                .niri
+                .layout
+                .find_window_and_output(&wl_surface)
+                .is_some()
+        {
+            warn!("client created a second xdg_toplevel for a surface, disconnecting it");
+            let toplevel = surface.xdg_toplevel();
+            let msg = "the wl_surface already has an xdg_toplevel";
+            if let Some(data) = toplevel.data::<XdgShellSurfaceUserData>() {
+                data.xdg_surface()
+                    .post_error(xdg_surface::Error::AlreadyConstructed, msg);
+            } else {
+                // smithay creates every toplevel with this data. Without it, disconnect the client
+                // through the toplevel, even though code 2 means invalid_size there.
+                toplevel.post_error(xdg_surface::Error::AlreadyConstructed as u32, msg);
+            }
+            self.niri.refused_role_objects.push(toplevel.id());
+            return;
+        }
+
         let unmapped = Unmapped::new(Window::new_wayland_window(surface));
-        let existing = self.niri.unmapped_windows.insert(wl_surface, unmapped);
-        assert!(existing.is_none());
+        self.niri.unmapped_windows.insert(wl_surface, unmapped);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -875,6 +900,14 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // new_toplevel() refused this toplevel, so niri doesn't track it, and the surface's first
+        // toplevel must stay.
+        let id = surface.xdg_toplevel().id();
+        if let Some(idx) = self.niri.refused_role_objects.iter().position(|x| *x == id) {
+            self.niri.refused_role_objects.swap_remove(idx);
+            return;
+        }
+
         if self
             .niri
             .unmapped_windows
